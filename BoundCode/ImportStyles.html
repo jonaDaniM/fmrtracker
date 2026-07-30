@@ -1,0 +1,129 @@
+<style>
+  .import-toolbar {
+    display: grid;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .import-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.75rem;
+    margin: 1rem 0 1.25rem;
+  }
+
+  .import-summary-card {
+    background: #fffdf8;
+    border: 1px solid #d7ddd7;
+    border-radius: 14px;
+    padding: 0.9rem 1rem;
+    box-shadow: 0 10px 30px rgba(31, 42, 36, 0.06);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .import-summary-card .label {
+    color: #5f6b64;
+    font-size: 0.8rem;
+  }
+
+  .import-summary-card .value {
+    font-size: 1.3rem;
+    font-weight: 650;
+  }
+
+  .import-queue-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: end;
+    margin: 1.5rem 0 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .import-queue-header h2 {
+    margin: 0;
+  }
+
+  .import-queue-table .import-check-column {
+    width: 42px;
+  }
+
+  .import-status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    background: #edf0ec;
+    white-space: nowrap;
+  }
+
+  .import-status-queued,
+  .import-status-discovered {
+    background: #e8eef8;
+    color: #35517a;
+  }
+
+  .import-status-processing {
+    background: #f7ecd7;
+    color: #9a6b16;
+  }
+
+  .import-status-staged-needs-verification {
+    background: #dff0e6;
+    color: #1f6b4a;
+  }
+
+  .import-status-needs-manual-entry,
+  .import-status-failed {
+    background: #f6e2e2;
+    color: #8f2d2d;
+  }
+
+  .import-status-cancelled,
+  .import-status-skipped-duplicate {
+    background: #ececec;
+    color: #5f6b64;
+  }
+
+  .import-source-name {
+    display: block;
+    font-weight: 600;
+  }
+
+  .import-source-link {
+    display: inline-block;
+    margin-top: 0.25rem;
+    color: #1f6b4a;
+  }
+
+  .import-subvalue {
+    display: block;
+    color: #5f6b64;
+    font-size: 0.85rem;
+    margin-top: 0.2rem;
+  }
+
+  .import-fmr-number {
+    font-weight: 650;
+  }
+
+  .import-confidence.high { color: #1f6b4a; }
+  .import-confidence.medium { color: #9a6b16; }
+  .import-confidence.low { color: #8f2d2d; }
+
+  .import-warning-list {
+    margin: 0;
+    padding-left: 1rem;
+    color: #5f6b64;
+    font-size: 0.85rem;
+  }
+
+  .import-message {
+    margin-top: 0.35rem;
+    color: #8f2d2d;
+    font-size: 0.85rem;
+  }
+</style>
