@@ -1,0 +1,872 @@
+<script>
+    const CLIENT_VERSION = '1.0.4-manual-field-refresh';
+    const state = {
+      bootstrap: null,
+      adminData: null,
+      fieldData: null,
+      fieldLine: '',
+      fieldSheet: '',
+      fieldPollTimer: null,
+      fieldRequestInFlight: false,
+      fieldRequestSequence: 0,
+      adminPollTimer: null,
+      requestInFlight: false,
+      adminRequestSequence: 0,
+      activeAction: null
+    };
+  
+    const byId = id => document.getElementById(id);
+    const globalError = byId('globalError');
+    const globalSuccess = byId('globalSuccess');
+  
+    document.addEventListener('DOMContentLoaded', initializePortal);
+  
+    function initializePortal() {
+      byId('pageTitle').textContent = REQUESTED_VIEW === 'admin'
+        ? 'FMR Administration Portal'
+        : 'FMR Field Portal';
+      byId('fieldNav').classList.toggle('active', REQUESTED_VIEW === 'field');
+      byId('adminNav').classList.toggle('active', REQUESTED_VIEW === 'admin');
+  
+      google.script.run
+        .withSuccessHandler(bootstrap => {
+          state.bootstrap = bootstrap;
+          byId('pageSubtitle').textContent =
+            `${bootstrap.displayName || bootstrap.userEmail} · ${bootstrap.role} · ` +
+            `FMRCore ${bootstrap.coreVersion} · Client ${CLIENT_VERSION}`;
+  
+          if (REQUESTED_VIEW === 'admin') {
+            byId('adminView').classList.remove('hidden');
+            bindAdminEvents();
+  
+            /*
+             * Admin data is intentionally refreshed on initial load, through
+             * the Refresh button, after filter submissions, and after successful
+             * Admin write actions. Continuous polling is disabled because the
+             * complete Admin dashboard request is comparatively expensive.
+             */
+            refreshAdmin(true);
+            state.adminPollTimer = null;
+          } else {
+            byId('fieldView').classList.remove('hidden');
+            bindFieldEvents();
+            bindModalEvents();
+            byId('fieldPermissionNote').textContent =
+              bootstrap.canPerformFieldTransactions
+                ? 'Authorized field actions are enabled.'
+                : 'Read-only access. A Material Control or Field Material Handler role is required to submit actions.';
+          }
+        })
+        .withFailureHandler(showError)
+        .getPortalBootstrap(REQUESTED_VIEW);
+    }
+  
+    function bindFieldEvents() {
+      byId('fieldSearchButton').addEventListener('click', () => searchField(true, true));
+      byId('fieldSheetNumber').addEventListener('keydown', event => {
+        if (event.key === 'Enter') searchField(true, true);
+      });
+    }
+  
+    function searchField(auditSearch, showLoading) {
+      const line = byId('fieldLineNumber').value.trim();
+      const sheet = byId('fieldSheetNumber').value.trim();
+  
+      if (!line || !sheet) {
+        byId('fieldStatus').textContent =
+          'Line and sheet are required.';
+        stopFieldPolling();
+        return;
+      }
+  
+      const isManualSearch =
+        auditSearch !== false;
+  
+      /*
+       * A manual search always supersedes the previous query. Background
+       * polling is skipped while another Field request is still running.
+       */
+      if (
+        !isManualSearch &&
+        state.fieldRequestInFlight
+      ) {
+        return;
+      }
+  
+      if (isManualSearch) {
+        stopFieldPolling();
+      }
+  
+      const requestSequence =
+        ++state.fieldRequestSequence;
+  
+      state.fieldRequestInFlight = true;
+      state.fieldLine = line;
+      state.fieldSheet = sheet;
+  
+      if (showLoading) {
+        byId('fieldStatus').textContent =
+          'Loading current material balances…';
+      }
+  
+      hideMessages();
+  
+      google.script.run
+        .withSuccessHandler(data => {
+          if (
+            requestSequence !==
+            state.fieldRequestSequence
+          ) {
+            return;
+          }
+  
+          state.fieldRequestInFlight = false;
+          state.fieldData = data;
+  
+          byId('fieldStatus').textContent =
+            `${data.resultCount} matching FMR(s)`;
+  
+          byId('fieldLastRefreshed').textContent =
+            `Last refreshed ${data.generatedAt}`;
+  
+          renderFieldResults(data);
+  
+          /*
+           * Poll only when a live matching FMR exists. A zero-result search
+           * should not continue generating server executions indefinitely.
+           */
+          if (Number(data.resultCount || 0) > 0) {
+            startFieldPolling();
+          } else {
+            stopFieldPolling();
+          }
+        })
+        .withFailureHandler(error => {
+          if (
+            requestSequence !==
+            state.fieldRequestSequence
+          ) {
+            return;
+          }
+  
+          state.fieldRequestInFlight = false;
+          stopFieldPolling();
+          byId('fieldStatus').textContent = '';
+          showError(error);
+        })
+        .getFieldPortalData(
+          line,
+          sheet,
+          isManualSearch
+        );
+    }
+  
+    function startFieldPolling() {
+      /*
+       * Field polling is intentionally disabled during acceptance testing.
+       * Field data refreshes only when the user clicks Search or after a
+       * successful Field transaction.
+       */
+      stopFieldPolling();
+    }
+  
+    function stopFieldPolling() {
+      if (state.fieldPollTimer) {
+        clearInterval(
+          state.fieldPollTimer
+        );
+  
+        state.fieldPollTimer = null;
+      }
+    }
+  
+    function renderFieldResults(data) {
+      if (!data.cards.length) {
+        byId('fieldResults').innerHTML = '<div class="panel">No matching FMRs were found.</div>';
+        return;
+      }
+      byId('fieldResults').innerHTML = data.cards
+        .map(card => renderFmrCard(card, true, data.user.canTransact))
+        .join('');
+      bindFieldActionButtons();
+    }
+  
+    function bindFieldActionButtons() {
+      document.querySelectorAll('[data-field-action]').forEach(button => {
+        button.addEventListener('click', () => {
+          openActionModal(button.dataset.fieldAction, button.dataset.lineId);
+        });
+      });
+    }
+  
+    function findFieldMaterial(lineId) {
+      for (const card of (state.fieldData?.cards || [])) {
+        const material = (card.materials || []).find(item => item.fmrLineId === lineId);
+        if (material) return {card, material};
+      }
+      return null;
+    }
+  
+    function renderFieldActions(material, canTransact) {
+      if (!canTransact) return '<div class="muted">Read-only material record.</div>';
+      const limits = material.actionLimits || {};
+      const buttons = [];
+  
+      if (Number(limits.confirmAvailable) > 0) {
+        buttons.push(actionButton('CONFIRM_AVAILABLE', material.fmrLineId, 'Confirm Available', 'success-button'));
+      }
+      if (Number(limits.bag) > 0) {
+        buttons.push(actionButton('BAG', material.fmrLineId, 'Bag & Tag', ''));
+      }
+      if (Number(limits.directIssue) > 0) {
+        buttons.push(actionButton('DIRECT_ISSUE', material.fmrLineId, 'Locate & Issue', 'success-button'));
+      }
+      if (Number(limits.issueAvailable) > 0) {
+        buttons.push(actionButton('ISSUE_FROM_AVAILABLE', material.fmrLineId, 'Issue Available', ''));
+      }
+      if ((material.activeBags || []).length > 0) {
+        buttons.push(actionButton('ISSUE_FROM_BAG', material.fmrLineId, 'Issue From Bag', ''));
+      }
+      if (Number(limits.backorder) > 0) {
+        buttons.push(actionButton('BACKORDER_REQUESTED', material.fmrLineId, 'Submit Backorder', 'warning'));
+      }
+  
+      return buttons.length
+        ? `<div class="material-actions">${buttons.join('')}</div>`
+        : '<div class="muted">No quantity action is currently available.</div>';
+    }
+  
+    function actionButton(action, lineId, label, className) {
+      return `<button type="button" class="small ${className || ''}"
+        data-field-action="${escapeAttribute(action)}"
+        data-line-id="${escapeAttribute(lineId)}">${escapeHtml(label)}</button>`;
+    }
+  
+    function renderActiveBagSummary(material) {
+      const bags = material.activeBags || [];
+      if (!bags.length) return '';
+      return `<div class="tag-summary">${bags.map(bag =>
+        `${escapeHtml(bag.tagNumber)} · ${formatQty(bag.qtyRemaining)} ${escapeHtml(bag.uom)} · ${escapeHtml(bag.storageLocation)}`
+      ).join('<br>')}</div>`;
+    }
+  
+    function bindModalEvents() {
+      byId('actionCloseButton').addEventListener('click', closeActionModal);
+      byId('actionCancelButton').addEventListener('click', closeActionModal);
+      byId('actionModal').addEventListener('click', event => {
+        if (event.target === byId('actionModal')) closeActionModal();
+      });
+      byId('actionForm').addEventListener('submit', submitFieldAction);
+    }
+  
+    function openActionModal(action, lineId) {
+      const found = findFieldMaterial(lineId);
+      if (!found) {
+        showError({message: 'The selected material record is no longer available. Refresh and try again.'});
+        return;
+      }
+  
+      state.activeAction = {action, lineId, card: found.card, material: found.material};
+      const {card, material} = found;
+      const definitions = actionDefinitions();
+      const definition = definitions[action];
+      if (!definition) {
+        showError({message: `Unsupported field action: ${action}`});
+        return;
+      }
+  
+      byId('actionTitle').textContent = definition.title;
+      byId('actionContext').textContent =
+        `${card.fmrNumber} · ${material.commodityCode} · ${material.description}`;
+      byId('actionFields').innerHTML = buildActionFields(action, material);
+      byId('actionStatus').textContent = '';
+      byId('actionModal').classList.remove('hidden');
+  
+      if (action === 'ISSUE_FROM_BAG') {
+        const bagSelect = byId('fieldBagItem');
+        if (bagSelect) bagSelect.addEventListener('change', updateBagMaximum);
+        updateBagMaximum();
+      }
+    }
+  
+    function actionDefinitions() {
+      return {
+        CONFIRM_AVAILABLE: {title: 'Confirm Available Material'},
+        BAG: {title: 'Bag & Tag Material'},
+        DIRECT_ISSUE: {title: 'Locate & Issue Material'},
+        ISSUE_FROM_AVAILABLE: {title: 'Issue Available Material'},
+        ISSUE_FROM_BAG: {title: 'Issue Material From Bag'},
+        BACKORDER_REQUESTED: {title: 'Submit Field Backorder'}
+      };
+    }
+  
+    function buildActionFields(action, material) {
+      const limits = material.actionLimits || {};
+      const options = state.fieldData.options || {};
+      let html = '';
+  
+      if (action === 'CONFIRM_AVAILABLE') {
+        html += quantityField(limits.confirmAvailable, 'Quantity confirmed available');
+        html += userSelectField('fieldSelectedUser', 'Handled By', options.bagHandlers);
+        html += textField('fieldStorageLocation', 'Storage Location', false);
+        html += notesField();
+      }
+  
+      if (action === 'BAG') {
+        html += quantityField(limits.bag, 'Quantity to bag');
+        html += userSelectField('fieldSelectedUser', 'Bagged By', options.bagHandlers);
+        html += tagAssignmentField(material);
+        html += textField('fieldStorageLocation', 'Storage Location for a new tag', false);
+        html += notesField();
+      }
+  
+      if (action === 'DIRECT_ISSUE') {
+        html += quantityField(limits.directIssue, 'Quantity to locate and issue');
+        html += textField('fieldIssuedTo', 'Issued To', true);
+        html += userSelectField('fieldSelectedUser', 'Issued By', options.issueHandlers);
+        html += textField('fieldStorageLocation', 'Location Found', false);
+        html += notesField();
+      }
+  
+      if (action === 'ISSUE_FROM_AVAILABLE') {
+        html += quantityField(limits.issueAvailable, 'Quantity to issue');
+        html += textField('fieldIssuedTo', 'Issued To', true);
+        html += userSelectField('fieldSelectedUser', 'Issued By', options.issueHandlers);
+        html += notesField();
+      }
+  
+      if (action === 'ISSUE_FROM_BAG') {
+        html += bagItemField(material.activeBags || []);
+        html += quantityField(
+          (material.activeBags || [])[0]?.qtyRemaining || 0,
+          'Quantity to issue',
+          'fieldQuantity'
+        );
+        html += textField('fieldIssuedTo', 'Issued To', true);
+        html += userSelectField('fieldSelectedUser', 'Issued By', options.issueHandlers);
+        html += notesField();
+      }
+  
+      if (action === 'BACKORDER_REQUESTED') {
+        html += quantityField(limits.backorder, 'Quantity unavailable');
+        html += selectField(
+          'fieldBackorderReason',
+          'Backorder Reason',
+          options.backorderReasons || []
+        );
+        html += userSelectField(
+          'fieldSelectedUser',
+          'Reported By',
+          options.backorderReporters
+        );
+        html += `<label>Expected Date (optional)
+          <input id="fieldExpectedDate" type="date">
+        </label>`;
+        html += notesField('Field Notes');
+      }
+  
+      html += `<div class="action-hint">
+        Requested ${formatQty(material.qtyRequested)} ·
+        Located ${formatQty(material.qtyConfirmedLocated)} ·
+        Bagged ${formatQty(material.qtyActiveBagged)} ·
+        Available ${formatQty(material.qtyAvailable)} ·
+        Issued ${formatQty(material.qtyIssued)}
+      </div>`;
+      return html;
+    }
+  
+    function quantityField(maximum, label, id='fieldQuantity') {
+      return `<label>${escapeHtml(label)}
+        <input id="${id}" type="number" min="0.01" step="0.01"
+          max="${escapeAttribute(maximum)}" required>
+        <span class="muted">Maximum: ${formatQty(maximum)}</span>
+      </label>`;
+    }
+  
+    function textField(id, label, required) {
+      return `<label>${escapeHtml(label)}
+        <input id="${id}" type="text" ${required ? 'required' : ''}>
+      </label>`;
+    }
+  
+    function notesField(label='Notes') {
+      return `<label>${escapeHtml(label)}
+        <textarea id="fieldNotes"></textarea>
+      </label>`;
+    }
+  
+    function userSelectField(id, label, users) {
+      const authenticatedEmail = state.bootstrap?.userEmail || '';
+      const selected = (users || []).find(user => user.email === authenticatedEmail);
+      return `<label>${escapeHtml(label)}
+        <select id="${id}" required>
+          <option value="">Select a person</option>
+          ${(users || []).map(user => `
+            <option value="${escapeAttribute(user.userId)}"
+              ${selected?.userId === user.userId ? 'selected' : ''}>
+              ${escapeHtml(user.name)}
+            </option>`).join('')}
+        </select>
+      </label>`;
+    }
+  
+    function selectField(id, label, values) {
+      return `<label>${escapeHtml(label)}
+        <select id="${id}" required>
+          <option value="">Select a reason</option>
+          ${(values || []).map(value =>
+            `<option value="${escapeAttribute(value)}">${escapeHtml(value)}</option>`
+          ).join('')}
+        </select>
+      </label>`;
+    }
+  
+    function tagAssignmentField(material) {
+      const tags = material.eligibleExistingTags || [];
+      return `<label>Tag Assignment
+        <select id="fieldBagTag">
+          <option value="">Create a new tag</option>
+          ${tags.map(tag => `
+            <option value="${escapeAttribute(tag.bagTagId)}">
+              Add to ${escapeHtml(tag.tagNumber)} · ${escapeHtml(tag.storageLocation)}
+            </option>`).join('')}
+        </select>
+        <span class="muted">A tag remains limited to this FMR, ISO line, and sheet.</span>
+      </label>`;
+    }
+  
+    function bagItemField(bags) {
+      return `<label>Bag / Tag
+        <select id="fieldBagItem" required>
+          ${(bags || []).map(bag => `
+            <option value="${escapeAttribute(bag.bagTagItemId)}"
+              data-remaining="${escapeAttribute(bag.qtyRemaining)}">
+              ${escapeHtml(bag.tagNumber)} · ${formatQty(bag.qtyRemaining)} ${escapeHtml(bag.uom)}
+              · ${escapeHtml(bag.storageLocation)}
+            </option>`).join('')}
+        </select>
+      </label>`;
+    }
+  
+    function updateBagMaximum() {
+      const select = byId('fieldBagItem');
+      const quantity = byId('fieldQuantity');
+      if (!select || !quantity) return;
+      const option = select.options[select.selectedIndex];
+      const maximum = Number(option?.dataset.remaining || 0);
+      quantity.max = maximum;
+      quantity.value = '';
+      const hint = quantity.parentElement.querySelector('.muted');
+      if (hint) hint.textContent = `Maximum: ${formatQty(maximum)}`;
+    }
+  
+    function closeActionModal() {
+      state.activeAction = null;
+      byId('actionModal').classList.add('hidden');
+      byId('actionFields').innerHTML = '';
+      byId('actionStatus').textContent = '';
+    }
+  
+    function submitFieldAction(event) {
+      event.preventDefault();
+      if (!state.activeAction) return;
+  
+      const request = {
+        action: state.activeAction.action,
+        fmrLineId: state.activeAction.lineId,
+        quantity: Number(byId('fieldQuantity')?.value || 0),
+        selectedUserId: byId('fieldSelectedUser')?.value || '',
+        issuedToName: byId('fieldIssuedTo')?.value.trim() || '',
+        storageLocation: byId('fieldStorageLocation')?.value.trim() || '',
+        bagTagId: byId('fieldBagTag')?.value || '',
+        bagTagItemId: byId('fieldBagItem')?.value || '',
+        reason: byId('fieldBackorderReason')?.value || '',
+        expectedDate: byId('fieldExpectedDate')?.value || '',
+        notes: byId('fieldNotes')?.value.trim() || ''
+      };
+  
+      byId('actionSubmitButton').disabled = true;
+      byId('actionStatus').textContent = 'Validating latest quantities and saving…';
+      hideMessages();
+  
+      google.script.run
+        .withSuccessHandler(result => {
+          byId('actionSubmitButton').disabled = false;
+          closeActionModal();
+          showSuccess(result.message || 'Field action completed.');
+          searchField(false, false);
+        })
+        .withFailureHandler(error => {
+          byId('actionSubmitButton').disabled = false;
+          byId('actionStatus').textContent = '';
+          showError(error);
+        })
+        .performFieldAction(request);
+    }
+  
+    function bindAdminEvents() {
+      byId('adminSearchButton').addEventListener('click', () => refreshAdmin(true));
+      byId('adminRefreshButton').addEventListener('click', () => refreshAdmin(true));
+      byId('adminClearButton').addEventListener('click', clearAdminFilters);
+      ['filterFmrNumber', 'filterIwp', 'filterIsoLine', 'filterIsoSheet', 'filterCommodity']
+        .forEach(id => byId(id).addEventListener('keydown', event => {
+          if (event.key === 'Enter') refreshAdmin(true);
+        }));
+    }
+  
+    function collectAdminFilters() {
+      return {
+        fmrNumber: byId('filterFmrNumber').value.trim(),
+        iwpNumber: byId('filterIwp').value.trim(),
+        isoLineNumber: byId('filterIsoLine').value.trim(),
+        isoSheet: byId('filterIsoSheet').value.trim(),
+        status: byId('filterStatus').value,
+        commodityCode: byId('filterCommodity').value.trim()
+      };
+    }
+  
+    function clearAdminFilters() {
+      ['filterFmrNumber', 'filterIwp', 'filterIsoLine', 'filterIsoSheet', 'filterCommodity']
+        .forEach(id => { byId(id).value = ''; });
+      byId('filterStatus').value = '';
+      refreshAdmin(true);
+    }
+  
+    function refreshAdmin(showLoading) {
+      /*
+       * Every request receives a sequence number and only the newest response
+       * is allowed to update the page.
+       */
+      const requestSequence =
+        ++state.adminRequestSequence;
+  
+      const filters =
+        collectAdminFilters();
+  
+      state.requestInFlight = true;
+      hideMessages();
+  
+      let slowMessageTimer = null;
+  
+      if (showLoading) {
+        byId('adminResultStatus').textContent =
+          'Loading project data…';
+  
+        slowMessageTimer = window.setTimeout(
+          () => {
+            if (
+              requestSequence ===
+              state.adminRequestSequence &&
+              state.requestInFlight
+            ) {
+              byId('adminResultStatus').textContent =
+                'Still loading project data…';
+            }
+          },
+          3000
+        );
+      }
+  
+      google.script.run
+        .withSuccessHandler(data => {
+          if (
+            requestSequence !==
+            state.adminRequestSequence
+          ) {
+            return;
+          }
+  
+          if (slowMessageTimer) {
+            window.clearTimeout(slowMessageTimer);
+          }
+  
+          state.requestInFlight = false;
+          state.adminData = data;
+          renderAdmin(data);
+        })
+        .withFailureHandler(error => {
+          if (
+            requestSequence !==
+            state.adminRequestSequence
+          ) {
+            return;
+          }
+  
+          if (slowMessageTimer) {
+            window.clearTimeout(slowMessageTimer);
+          }
+  
+          state.requestInFlight = false;
+          byId('adminResultStatus').textContent = '';
+          showError(error);
+        })
+        .getAdminPortalData(filters);
+    }
+  
+    function renderAdmin(data) {
+      renderKpis(data.summary);
+      renderFilterOptions(data.filters);
+      renderAdminFmrs(data.fmrs);
+      renderBackorders(data.pendingBackorders, data.user.canReviewBackorders);
+      renderBagTags(data.activeBagTags);
+  
+      byId('lastRefreshed').textContent = `Last refreshed ${data.generatedAt}`;
+      byId('adminResultStatus').textContent =
+        `${data.resultCount} matching FMR(s)${data.truncated ? ' · showing first 200' : ''}`;
+    }
+  
+    function renderKpis(summary) {
+      const definitions = [
+        ['Total FMRs', summary.totalFmrs],
+        ['Open FMRs', summary.openFmrs],
+        ['Pending Backorders', summary.pendingBackorders],
+        ['Active Tags', summary.activeTags],
+        ['Requested Qty', formatQty(summary.qtyRequested)],
+        ['Located Qty', formatQty(summary.qtyLocated)],
+        ['Available Qty', formatQty(summary.qtyAvailable)],
+        ['Bagged Qty', formatQty(summary.qtyBagged)],
+        ['Issued Qty', formatQty(summary.qtyIssued)],
+        ['Confirmed Backorder', formatQty(summary.qtyConfirmedBackorder)]
+      ];
+      byId('kpiGrid').innerHTML = definitions.map(([label, value]) => `
+        <div class="kpi">
+          <div class="kpi-label">${escapeHtml(label)}</div>
+          <div class="kpi-value">${escapeHtml(value)}</div>
+        </div>`).join('');
+    }
+  
+    function renderFilterOptions(filters) {
+      const statusSelect = byId('filterStatus');
+      const currentStatus = statusSelect.value;
+      statusSelect.innerHTML = '<option value="">All statuses</option>' +
+        (filters.statuses || []).map(status =>
+          `<option value="${escapeAttribute(status)}">${escapeHtml(status)}</option>`
+        ).join('');
+      statusSelect.value = currentStatus;
+  
+      byId('iwpOptions').innerHTML = (filters.iwps || []).map(iwp =>
+        `<option value="${escapeAttribute(iwp)}"></option>`
+      ).join('');
+    }
+  
+    function renderAdminFmrs(fmrs) {
+      if (!fmrs.length) {
+        byId('adminFmrResults').innerHTML =
+          '<div class="panel empty-state">No FMRs match the current filters.</div>';
+        return;
+      }
+      byId('adminFmrResults').innerHTML = fmrs.map(card =>
+        renderFmrCard(card, false, false)
+      ).join('');
+    }
+  
+    function renderFmrCard(card, fieldMode, canTransact) {
+      const totals = card.totals || totalCardMaterials(card.materials || []);
+      return `
+        <article class="fmr-card">
+          <div class="fmr-title-row">
+            <div>
+              <h3>${escapeHtml(card.fmrNumber)}</h3>
+              <div class="fmr-meta">
+                IWP: ${escapeHtml(card.iwpNumber)} ·
+                Status: ${escapeHtml(card.status || '')}
+                ${card.priority ? ` · Priority: ${escapeHtml(card.priority)}` : ''}
+                ${card.requestedBy ? ` · Requested by: ${escapeHtml(card.requestedBy)}` : ''}
+              </div>
+            </div>
+            <span class="badge ${statusClass(card.status)}">${escapeHtml(card.status || 'Unknown')}</span>
+          </div>
+  
+          <div class="summary-strip">
+            ${summaryCell('Requested', totals.requested)}
+            ${summaryCell('Located', totals.located)}
+            ${summaryCell('Bagged', totals.bagged)}
+            ${summaryCell('Available', totals.available)}
+            ${summaryCell('Issued', totals.issued)}
+            ${summaryCell('Pending B/O', totals.pendingBackorder)}
+            ${summaryCell('Confirmed B/O', totals.confirmedBackorder)}
+          </div>
+  
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ISO Line</th><th>Sheet</th><th>Commodity Code</th><th>Size</th>
+                  <th>Description</th><th>Requested</th><th>Located</th><th>Bagged</th>
+                  <th>Available</th><th>Issued</th><th>Backorder</th><th>Status</th>
+                  ${fieldMode ? '<th>Field Actions</th>' : ''}
+                </tr>
+              </thead>
+              <tbody>
+                ${(card.materials || []).map(item => `
+                  <tr>
+                    <td>${escapeHtml(item.isoLineNumber || card.isoLineNumber)}</td>
+                    <td>${escapeHtml(item.isoSheet || card.isoSheet)}</td>
+                    <td>${escapeHtml(item.commodityCode)}</td>
+                    <td>${escapeHtml(item.size)}</td>
+                    <td>
+                      ${escapeHtml(item.description)}
+                      ${fieldMode ? renderActiveBagSummary(item) : ''}
+                    </td>
+                    <td>${formatQty(item.qtyRequested)}</td>
+                    <td>${formatQty(item.qtyConfirmedLocated)}</td>
+                    <td>${formatQty(item.qtyActiveBagged)}</td>
+                    <td>${formatQty(item.qtyAvailable)}</td>
+                    <td>${formatQty(item.qtyIssued)}</td>
+                    <td>${formatQty((item.qtyPendingBackorder || 0) + (item.qtyConfirmedBackorder || 0))}</td>
+                    <td>${escapeHtml(item.lineStatus || '')}</td>
+                    ${fieldMode ? `<td>${renderFieldActions(item, canTransact)}</td>` : ''}
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </article>`;
+    }
+  
+    function renderBackorders(items, canReview) {
+      byId('backorderCount').textContent = items.length;
+      if (!items.length) {
+        byId('backorderQueue').innerHTML =
+          '<div class="empty-state">No backorders are awaiting Planning review.</div>';
+        return;
+      }
+  
+      byId('backorderQueue').innerHTML = items.map(item => `
+        <article class="queue-item">
+          <div class="queue-title">${escapeHtml(item.fmrNumber)} · ${escapeHtml(item.commodityCode)}</div>
+          <div class="queue-meta">
+            IWP ${escapeHtml(item.iwpNumber)} · Line ${escapeHtml(item.isoLineNumber)} ·
+            Sheet ${escapeHtml(item.isoSheet)}<br>
+            Pending ${formatQty(item.qtyPending)} of ${formatQty(item.qtyRequestedBackorder)} ·
+            ${escapeHtml(item.reason)}<br>
+            Reported by ${escapeHtml(item.reportedBy)} · ${escapeHtml(item.reportedAt)}
+            ${item.fieldNotes ? `<br>Field note: ${escapeHtml(item.fieldNotes)}` : ''}
+          </div>
+          ${canReview ? `
+            <div class="queue-actions">
+              <button class="small" onclick="submitBackorderDecision('${escapeAttribute(item.requestId)}','CONFIRM',${item.qtyPending})">Confirm</button>
+              <button class="small warning" onclick="partialConfirmBackorder('${escapeAttribute(item.requestId)}',${item.qtyPending})">Partial</button>
+              <button class="small danger" onclick="submitBackorderDecision('${escapeAttribute(item.requestId)}','REJECT',0)">Reject</button>
+              <button class="small secondary" onclick="submitBackorderDecision('${escapeAttribute(item.requestId)}','RETURN',0)">Return</button>
+            </div>` : '<div class="muted">Planning role required to review.</div>'}
+        </article>`).join('');
+    }
+  
+    function renderBagTags(items) {
+      byId('bagTagCount').textContent = items.length;
+      if (!items.length) {
+        byId('bagTagQueue').innerHTML =
+          '<div class="empty-state">No material is currently reserved under an active tag.</div>';
+        return;
+      }
+  
+      byId('bagTagQueue').innerHTML = items.map(tag => `
+        <article class="queue-item">
+          <div class="queue-title">${escapeHtml(tag.tagNumber)} · ${escapeHtml(tag.fmrNumber)}</div>
+          <div class="queue-meta">
+            IWP ${escapeHtml(tag.iwpNumber)} · Line ${escapeHtml(tag.isoLineNumber)} ·
+            Sheet ${escapeHtml(tag.isoSheet)}<br>
+            Location: ${escapeHtml(tag.storageLocation || 'Not recorded')} ·
+            Bagged by ${escapeHtml(tag.baggedBy)} · ${escapeHtml(tag.baggedAt)}
+          </div>
+          ${(tag.items || []).map(item => `
+            <div class="queue-meta">
+              ${escapeHtml(item.commodityCode)} · ${escapeHtml(item.size)} ·
+              Remaining ${formatQty(item.qtyRemainingInBag)} ${escapeHtml(item.uom)}
+            </div>`).join('')}
+        </article>`).join('');
+    }
+  
+    function partialConfirmBackorder(requestId, maximum) {
+      const quantity = window.prompt(`Enter the quantity to confirm. Maximum pending quantity: ${maximum}`);
+      if (quantity == null) return;
+      submitBackorderDecision(requestId, 'PARTIAL_CONFIRM', Number(quantity));
+    }
+  
+    function submitBackorderDecision(requestId, decision, confirmedQty) {
+      const labels = {
+        CONFIRM: 'confirm the full pending quantity',
+        PARTIAL_CONFIRM: `confirm ${confirmedQty}`,
+        REJECT: 'reject the pending quantity',
+        RETURN: 'return the request for clarification'
+      };
+      if (!window.confirm(`Planning decision: ${labels[decision]}. Continue?`)) return;
+  
+      const planningNotes = window.prompt('Planning note (optional):', '') || '';
+      hideMessages();
+      google.script.run
+        .withSuccessHandler(result => {
+          showSuccess(`Backorder ${result.requestId} updated to ${result.nextStatus}.`);
+          refreshAdmin(false);
+        })
+        .withFailureHandler(showError)
+        .reviewBackorder({requestId, decision, confirmedQty, planningNotes});
+    }
+  
+    function summaryCell(label, value) {
+      return `<div class="summary-cell"><span>${escapeHtml(label)}</span><strong>${formatQty(value)}</strong></div>`;
+    }
+  
+    function totalCardMaterials(materials) {
+      const total = field => materials.reduce((sum, item) => sum + Number(item[field] || 0), 0);
+      return {
+        requested: total('qtyRequested'),
+        located: total('qtyConfirmedLocated'),
+        bagged: total('qtyActiveBagged'),
+        available: total('qtyAvailable'),
+        issued: total('qtyIssued'),
+        pendingBackorder: total('qtyPendingBackorder'),
+        confirmedBackorder: total('qtyConfirmedBackorder')
+      };
+    }
+  
+    function formatQty(value) {
+      const number = Number(value || 0);
+      return Number.isInteger(number) ? String(number) : number.toFixed(2).replace(/\.?0+$/, '');
+    }
+  
+    function statusClass(status) {
+      const normalized = String(status || '').toLowerCase();
+      if (normalized.includes('issued') || normalized === 'closed') return 'success';
+      if (normalized.includes('backorder') || normalized.includes('cancel')) return 'danger';
+      if (normalized.includes('sourcing') || normalized.includes('partial')) return 'warn';
+      return '';
+    }
+  
+    function showError(error) {
+      if (!error) return;
+      globalSuccess.classList.add('hidden');
+      globalError.textContent = error.message || String(error);
+      globalError.classList.remove('hidden');
+    }
+  
+    function showSuccess(message) {
+      globalError.classList.add('hidden');
+      globalSuccess.textContent = message;
+      globalSuccess.classList.remove('hidden');
+      window.setTimeout(() => globalSuccess.classList.add('hidden'), 7000);
+    }
+  
+    function hideMessages() {
+      globalError.textContent = '';
+      globalSuccess.textContent = '';
+      globalError.classList.add('hidden');
+      globalSuccess.classList.add('hidden');
+    }
+  
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+  
+    function escapeAttribute(value) {
+      return escapeHtml(value).replaceAll('`', '&#096;');
+    }
+  </script>
+  
+  
+  

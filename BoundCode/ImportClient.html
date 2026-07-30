@@ -1,0 +1,862 @@
+<script>
+    (() => {
+      'use strict';
+    
+      if (REQUESTED_VIEW !== 'import') {
+        return;
+      }
+    
+      const state = {
+        bootstrap: null,
+        batches: [],
+        selectedBatch: null,
+        summary: null,
+        workspaceLinks: null,
+        selectedImportIds: new Set(),
+        busy: false
+      };
+    
+      const elements = {};
+    
+      document.addEventListener('DOMContentLoaded', initializeImportPortal_);
+    
+      async function initializeImportPortal_() {
+        cacheImportElements_();
+        activateImportView_();
+        bindImportEvents_();
+    
+        try {
+          setImportBusy_(true, 'Loading import services…');
+    
+          const [bootstrapResponse, batchesResponse] = await Promise.all([
+            callImportServer_('phase4ImportGetBootstrap'),
+            callImportServer_('phase4ImportGetAssignedBatches')
+          ]);
+    
+          state.bootstrap = bootstrapResponse;
+          state.batches = Array.isArray(batchesResponse.batches)
+            ? batchesResponse.batches
+            : [];
+    
+          elements.importUserEmail.textContent =
+            bootstrapResponse.callerEmail || 'Unknown account';
+    
+          populateImportStatuses_(
+            bootstrapResponse.statusOptions || []
+          );
+    
+          populateImportBatches_();
+          selectInitialBatch_();
+    
+          /*
+           * Bootstrap loading is complete. Clear the startup busy flag before
+           * refreshImportBatch_(), because that function intentionally refuses to
+           * start while another operation is marked busy.
+           */
+          setImportBusy_(false);
+    
+          if (state.selectedBatch) {
+            await refreshImportBatch_();
+          } else {
+            renderImportEmpty_(
+              'No assigned FMR batches were found for this account.'
+            );
+          }
+        } catch (error) {
+          setImportBusy_(false);
+          showImportError_(error.message || String(error));
+        }
+      }
+    
+      function cacheImportElements_() {
+        [
+          'pageTitle',
+          'pageSubtitle',
+          'fieldView',
+          'adminView',
+          'importView',
+          'fieldNav',
+          'adminNav',
+          'importNav',
+          'globalError',
+          'globalSuccess',
+          'importUserEmail',
+          'importBatchSelect',
+          'importStatusFilter',
+          'importNameFilter',
+          'importChunkSize',
+          'importDiscoverButton',
+          'importProcessChunkButton',
+          'importRefreshButton',
+          'importProcessSelectedButton',
+          'importRetrySelectedButton',
+          'importCancelSelectedButton',
+          'importOpenFolderButton',
+          'importOpenStagingButton',
+          'importOpenQueueButton',
+          'importOperationStatus',
+          'importBatchSummary',
+          'importQueueCaption',
+          'importSelectedCount',
+          'importClearSelectionButton',
+          'importQueueEmpty',
+          'importQueueTableWrap',
+          'importQueueBody',
+          'importSelectAll'
+        ].forEach((id) => {
+          elements[id] = document.getElementById(id);
+        });
+      }
+    
+      function activateImportView_() {
+        elements.pageTitle.textContent = 'FMR Import Portal';
+        elements.pageSubtitle.textContent =
+          'Import completed FMR documents into protected draft staging.';
+    
+        elements.fieldView.classList.add('hidden');
+        elements.adminView.classList.add('hidden');
+        elements.importView.classList.remove('hidden');
+    
+        elements.fieldNav.classList.remove('active');
+        elements.adminNav.classList.remove('active');
+        elements.importNav.classList.add('active');
+      }
+    
+      function bindImportEvents_() {
+        elements.importBatchSelect.addEventListener(
+          'change',
+          async () => {
+            const batchId = elements.importBatchSelect.value;
+            state.selectedBatch =
+              state.batches.find((batch) => batch.batchId === batchId) || null;
+            state.selectedImportIds.clear();
+            await refreshImportBatch_();
+          }
+        );
+    
+        elements.importStatusFilter.addEventListener(
+          'change',
+          renderImportQueue_
+        );
+    
+        elements.importRefreshButton.addEventListener(
+          'click',
+          refreshImportBatch_
+        );
+    
+        elements.importDiscoverButton.addEventListener(
+          'click',
+          discoverImportFiles_
+        );
+    
+        elements.importProcessChunkButton.addEventListener(
+          'click',
+          processImportChunk_
+        );
+    
+        elements.importProcessSelectedButton.addEventListener(
+          'click',
+          processSelectedImports_
+        );
+    
+        elements.importRetrySelectedButton.addEventListener(
+          'click',
+          retrySelectedImports_
+        );
+    
+        elements.importCancelSelectedButton.addEventListener(
+          'click',
+          cancelSelectedImport_
+        );
+    
+        elements.importOpenFolderButton.addEventListener(
+          'click',
+          openImportSourceFolder_
+        );
+    
+        elements.importOpenStagingButton.addEventListener(
+          'click',
+          () => openImportWorkspaceLink_('stagingUrl')
+        );
+    
+        elements.importOpenQueueButton.addEventListener(
+          'click',
+          () => openImportWorkspaceLink_('queueUrl')
+        );
+    
+        elements.importClearSelectionButton.addEventListener(
+          'click',
+          () => {
+            state.selectedImportIds.clear();
+            renderImportQueue_();
+          }
+        );
+    
+        elements.importSelectAll.addEventListener(
+          'change',
+          () => {
+            const visibleItems = getVisibleImportItems_();
+    
+            if (elements.importSelectAll.checked) {
+              visibleItems.forEach((item) => {
+                state.selectedImportIds.add(item.importId);
+              });
+            } else {
+              visibleItems.forEach((item) => {
+                state.selectedImportIds.delete(item.importId);
+              });
+            }
+    
+            renderImportQueue_();
+          }
+        );
+      }
+    
+      function populateImportStatuses_(statuses) {
+        elements.importStatusFilter.innerHTML =
+          '<option value="">All statuses</option>';
+    
+        statuses.forEach((status) => {
+          const option = document.createElement('option');
+          option.value = status;
+          option.textContent = formatImportStatus_(status);
+          elements.importStatusFilter.appendChild(option);
+        });
+      }
+    
+      function populateImportBatches_() {
+        elements.importBatchSelect.innerHTML = '';
+    
+        if (state.batches.length === 0) {
+          const option = document.createElement('option');
+          option.value = '';
+          option.textContent = 'No assigned batches';
+          elements.importBatchSelect.appendChild(option);
+          elements.importBatchSelect.disabled = true;
+          return;
+        }
+    
+        state.batches.forEach((batch) => {
+          const option = document.createElement('option');
+          option.value = batch.batchId;
+          option.textContent =
+            `${batch.batchName || batch.batchId} — ${batch.batchStatus || 'UNKNOWN'}`;
+          elements.importBatchSelect.appendChild(option);
+        });
+      }
+    
+      function selectInitialBatch_() {
+        if (state.batches.length === 0) {
+          state.selectedBatch = null;
+          return;
+        }
+    
+        const urlBatchId =
+          new URLSearchParams(window.location.search).get('batch');
+    
+        state.selectedBatch =
+          state.batches.find((batch) => batch.batchId === urlBatchId) ||
+          state.batches.find((batch) =>
+            String(batch.batchStatus || '').toUpperCase() === 'OPEN'
+          ) ||
+          state.batches[0];
+    
+        elements.importBatchSelect.value = state.selectedBatch.batchId;
+      }
+    
+      async function refreshImportBatch_() {
+        if (!state.selectedBatch || state.busy) {
+          return;
+        }
+    
+        try {
+          setImportBusy_(true, 'Refreshing import queue…');
+          hideImportAlerts_();
+    
+          const [summary, links] = await Promise.all([
+            callImportServer_(
+              'phase4ImportGetBatchSummary',
+              {
+                batchId: state.selectedBatch.batchId,
+                maximumItems: 100,
+                includeItems: true
+              }
+            ),
+            callImportServer_(
+              'phase4ImportGetWorkspaceLinks',
+              {
+                batchId: state.selectedBatch.batchId
+              }
+            )
+          ]);
+    
+          state.summary = summary;
+          state.workspaceLinks = links;
+          pruneImportSelection_();
+          renderImportSummary_();
+          renderImportQueue_();
+    
+          elements.importQueueCaption.textContent =
+            `${state.selectedBatch.batchName || state.selectedBatch.batchId} · ` +
+            `${summary.totalImports || 0} queue record(s)`;
+    
+          setImportBusy_(false);
+        } catch (error) {
+          setImportBusy_(false);
+          showImportError_(error.message || String(error));
+        }
+      }
+    
+      async function discoverImportFiles_() {
+        if (!state.selectedBatch || state.busy) {
+          return;
+        }
+    
+        try {
+          setImportBusy_(true, 'Discovering completed FMR files…');
+          hideImportAlerts_();
+    
+          const result = await callImportServer_(
+            'phase4ImportDiscoverBatchFiles',
+            {
+              batchId: state.selectedBatch.batchId,
+              maximumFiles: 500,
+              fileNameContains: elements.importNameFilter.value.trim()
+            }
+          );
+    
+          setImportBusy_(false);
+          await refreshImportBatch_();
+    
+          showImportSuccess_(
+            `Discovery complete: ${result.newlyQueued || 0} newly queued, ` +
+            `${result.alreadyQueued || 0} already present, ` +
+            `${result.ignoredUnsupported || 0} unsupported.`
+          );
+        } catch (error) {
+          setImportBusy_(false);
+          showImportError_(error.message || String(error));
+        }
+      }
+    
+      async function processImportChunk_() {
+        if (!state.selectedBatch || state.busy) {
+          return;
+        }
+    
+        const chunkSize = clampImportInteger_(
+          elements.importChunkSize.value,
+          1,
+          10,
+          5
+        );
+    
+        if (!window.confirm(
+          `Process the next ${chunkSize} queued source file(s)? ` +
+          'All extracted rows will remain DRAFT and require verification.'
+        )) {
+          return;
+        }
+    
+        try {
+          setImportBusy_(true, 'Processing the next import chunk…');
+          hideImportAlerts_();
+    
+          const result = await callImportServer_(
+            'phase4ImportProcessChunk',
+            {
+              batchId: state.selectedBatch.batchId,
+              chunkSize
+            }
+          );
+    
+          setImportBusy_(false);
+          await refreshImportBatch_();
+    
+          showImportSuccess_(
+            `Processed ${result.processedCount || 0} file(s).`
+          );
+        } catch (error) {
+          setImportBusy_(false);
+          showImportError_(error.message || String(error));
+        }
+      }
+    
+      async function processSelectedImports_() {
+        const importIds = getSelectedImportIds_();
+    
+        if (importIds.length === 0) {
+          showImportError_('Select at least one queue record to process.');
+          return;
+        }
+    
+        if (!window.confirm(
+          `Process ${importIds.length} selected source file(s)?`
+        )) {
+          return;
+        }
+    
+        try {
+          setImportBusy_(true, 'Processing selected imports…');
+          hideImportAlerts_();
+    
+          const result = await callImportServer_(
+            'phase4ImportProcessSelected',
+            {
+              importIds
+            }
+          );
+    
+          state.selectedImportIds.clear();
+          setImportBusy_(false);
+          await refreshImportBatch_();
+    
+          showImportSuccess_(
+            `Processed ${result.processedCount || 0} selected file(s).`
+          );
+        } catch (error) {
+          setImportBusy_(false);
+          showImportError_(error.message || String(error));
+        }
+      }
+    
+      async function retrySelectedImports_() {
+        const importIds = getSelectedImportIds_();
+    
+        if (importIds.length === 0) {
+          showImportError_('Select at least one failed or manual-entry record.');
+          return;
+        }
+    
+        if (!window.confirm(
+          `Requeue ${importIds.length} selected record(s) for another attempt?`
+        )) {
+          return;
+        }
+    
+        try {
+          setImportBusy_(true, 'Requeuing selected imports…');
+          hideImportAlerts_();
+    
+          const result = await callImportServer_(
+            'phase4ImportRetryFailures',
+            {
+              batchId: state.selectedBatch.batchId,
+              importIds
+            }
+          );
+    
+          state.selectedImportIds.clear();
+          setImportBusy_(false);
+          await refreshImportBatch_();
+    
+          showImportSuccess_(
+            `Requeued ${result.retried || 0}; skipped ${result.skipped || 0}.`
+          );
+        } catch (error) {
+          setImportBusy_(false);
+          showImportError_(error.message || String(error));
+        }
+      }
+    
+      async function cancelSelectedImport_() {
+        const importIds = getSelectedImportIds_();
+    
+        if (importIds.length !== 1) {
+          showImportError_('Select exactly one queue record to cancel.');
+          return;
+        }
+    
+        const reason = window.prompt(
+          'Enter the reason for cancelling this import:'
+        );
+    
+        if (!reason || !reason.trim()) {
+          return;
+        }
+    
+        try {
+          setImportBusy_(true, 'Cancelling import…');
+          hideImportAlerts_();
+    
+          await callImportServer_(
+            'phase4ImportCancel',
+            {
+              importId: importIds[0],
+              reason: reason.trim()
+            }
+          );
+    
+          state.selectedImportIds.clear();
+          setImportBusy_(false);
+          await refreshImportBatch_();
+    
+          showImportSuccess_(
+            'The selected import was cancelled.'
+          );
+        } catch (error) {
+          setImportBusy_(false);
+          showImportError_(error.message || String(error));
+        }
+      }
+    
+      function openImportSourceFolder_() {
+        if (
+          state.selectedBatch &&
+          state.selectedBatch.sourceFolderUrl
+        ) {
+          window.open(
+            state.selectedBatch.sourceFolderUrl,
+            '_blank',
+            'noopener'
+          );
+          return;
+        }
+    
+        showImportError_('No source folder URL is available for this batch.');
+      }
+    
+      function openImportWorkspaceLink_(propertyName) {
+        const url =
+          state.workspaceLinks &&
+          state.workspaceLinks[propertyName];
+    
+        if (!url) {
+          showImportError_('The requested workspace link is unavailable.');
+          return;
+        }
+    
+        window.open(url, '_blank', 'noopener');
+      }
+    
+      function renderImportSummary_() {
+        const summary = state.summary || {};
+        const counts = summary.statusCounts || {};
+    
+        const cards = [
+          ['Total Imports', summary.totalImports || 0],
+          ['Queued', counts.QUEUED || 0],
+          ['Processing', counts.PROCESSING || 0],
+          ['Needs Verification', counts.STAGED_NEEDS_VERIFICATION || 0],
+          ['Manual / Failed',
+            (counts.NEEDS_MANUAL_ENTRY || 0) + (counts.FAILED || 0)],
+          ['Staged Rows', summary.totalStagedRows || 0]
+        ];
+    
+        elements.importBatchSummary.innerHTML = cards
+          .map(([label, value]) => `
+            <article class="import-summary-card">
+              <span class="label">${escapeImportHtml_(label)}</span>
+              <span class="value">${escapeImportHtml_(String(value))}</span>
+            </article>
+          `)
+          .join('');
+      }
+    
+      function renderImportQueue_() {
+        const visibleItems = getVisibleImportItems_();
+    
+        if (!state.summary || visibleItems.length === 0) {
+          elements.importQueueBody.innerHTML = '';
+          elements.importQueueTableWrap.classList.add('hidden');
+          elements.importQueueEmpty.classList.remove('hidden');
+          elements.importQueueEmpty.textContent =
+            state.summary && (state.summary.totalImports || 0) > 0
+              ? 'No queue records match the selected status.'
+              : 'No import queue records were found for this batch.';
+          updateImportSelectionSummary_(visibleItems);
+          return;
+        }
+    
+        elements.importQueueEmpty.classList.add('hidden');
+        elements.importQueueTableWrap.classList.remove('hidden');
+    
+        elements.importQueueBody.innerHTML = visibleItems
+          .map(renderImportQueueRow_)
+          .join('');
+    
+        elements.importQueueBody
+          .querySelectorAll('input[data-import-id]')
+          .forEach((checkbox) => {
+            checkbox.addEventListener('change', () => {
+              const importId = checkbox.dataset.importId;
+    
+              if (checkbox.checked) {
+                state.selectedImportIds.add(importId);
+              } else {
+                state.selectedImportIds.delete(importId);
+              }
+    
+              updateImportSelectionSummary_(visibleItems);
+            });
+          });
+    
+        updateImportSelectionSummary_(visibleItems);
+      }
+    
+      function renderImportQueueRow_(item) {
+        const selected = state.selectedImportIds.has(item.importId);
+        const statusClass = String(item.status || '')
+          .toLowerCase()
+          .replace(/_/g, '-');
+    
+        const warningItems = Array.isArray(item.warnings)
+          ? item.warnings
+          : [];
+    
+        const warningsHtml = warningItems.length
+          ? `<ul class="import-warning-list">${
+              warningItems
+                .slice(0, 5)
+                .map((warning) =>
+                  `<li>${escapeImportHtml_(formatImportStatus_(warning))}</li>`
+                )
+                .join('')
+            }</ul>`
+          : '<span class="muted">None</span>';
+    
+        const messageHtml = item.message
+          ? `<div class="import-message">${escapeImportHtml_(item.message)}</div>`
+          : '';
+    
+        const confidence = Number(item.confidencePct || 0);
+        const confidenceClass =
+          confidence >= 80 ? 'high' :
+          confidence >= 60 ? 'medium' :
+          'low';
+    
+        const sourceLink = item.sourceFileUrl
+          ? `<a class="import-source-link" href="${escapeImportAttribute_(item.sourceFileUrl)}" target="_blank" rel="noopener">Open source</a>`
+          : '';
+    
+        return `
+          <tr>
+            <td class="import-check-column">
+              <input
+                type="checkbox"
+                data-import-id="${escapeImportAttribute_(item.importId)}"
+                ${selected ? 'checked' : ''}
+                aria-label="Select ${escapeImportAttribute_(item.sourceFileName || item.importId)}">
+            </td>
+            <td>
+              <span class="import-status-badge import-status-${escapeImportAttribute_(statusClass)}">
+                ${escapeImportHtml_(formatImportStatus_(item.status))}
+              </span>
+            </td>
+            <td>
+              <span class="import-source-name">${escapeImportHtml_(item.sourceFileName || item.sourceFileId)}</span>
+              ${sourceLink}
+            </td>
+            <td>
+              ${escapeImportHtml_(formatImportStatus_(item.importMethod))}
+              <span class="import-subvalue">${escapeImportHtml_(item.detectedTemplate || '')}</span>
+            </td>
+            <td>
+              <span class="import-fmr-number">${escapeImportHtml_(item.fmrNumber || 'Not detected')}</span>
+              <span class="import-subvalue">
+                Rev ${escapeImportHtml_(item.revision || '—')} ·
+                ${escapeImportHtml_(item.iwpNumber || 'IWP pending')}
+              </span>
+            </td>
+            <td>
+              ${escapeImportHtml_(String(item.materialLineCount || 0))} detected
+              <span class="import-subvalue">
+                ${escapeImportHtml_(String(item.stagedEntryRowCount || 0))} staged
+              </span>
+            </td>
+            <td>
+              <span class="import-confidence ${confidenceClass}">
+                ${escapeImportHtml_(String(confidence))}%
+              </span>
+            </td>
+            <td>
+              ${warningsHtml}
+              ${messageHtml}
+            </td>
+            <td>
+              ${escapeImportHtml_(formatImportDate_(item.updatedAt))}
+            </td>
+          </tr>
+        `;
+      }
+    
+      function getVisibleImportItems_() {
+        const items =
+          state.summary && Array.isArray(state.summary.items)
+            ? state.summary.items
+            : [];
+    
+        const statusFilter = elements.importStatusFilter.value;
+    
+        return items.filter((item) =>
+          !statusFilter || item.status === statusFilter
+        );
+      }
+    
+      function getSelectedImportIds_() {
+        return Array.from(state.selectedImportIds);
+      }
+    
+      function pruneImportSelection_() {
+        const validIds = new Set(
+          state.summary && Array.isArray(state.summary.items)
+            ? state.summary.items.map((item) => item.importId)
+            : []
+        );
+    
+        Array.from(state.selectedImportIds).forEach((importId) => {
+          if (!validIds.has(importId)) {
+            state.selectedImportIds.delete(importId);
+          }
+        });
+      }
+    
+      function updateImportSelectionSummary_(visibleItems) {
+        elements.importSelectedCount.textContent =
+          `${state.selectedImportIds.size} selected`;
+    
+        const visibleIds = visibleItems.map((item) => item.importId);
+        const selectedVisibleCount = visibleIds.filter((id) =>
+          state.selectedImportIds.has(id)
+        ).length;
+    
+        elements.importSelectAll.checked =
+          visibleIds.length > 0 &&
+          selectedVisibleCount === visibleIds.length;
+    
+        elements.importSelectAll.indeterminate =
+          selectedVisibleCount > 0 &&
+          selectedVisibleCount < visibleIds.length;
+      }
+    
+      function renderImportEmpty_(message) {
+        elements.importBatchSummary.innerHTML = '';
+        elements.importQueueBody.innerHTML = '';
+        elements.importQueueTableWrap.classList.add('hidden');
+        elements.importQueueEmpty.classList.remove('hidden');
+        elements.importQueueEmpty.textContent = message;
+      }
+    
+      function setImportBusy_(busy, message = '') {
+        state.busy = busy;
+    
+        [
+          elements.importBatchSelect,
+          elements.importDiscoverButton,
+          elements.importProcessChunkButton,
+          elements.importRefreshButton,
+          elements.importProcessSelectedButton,
+          elements.importRetrySelectedButton,
+          elements.importCancelSelectedButton
+        ].forEach((element) => {
+          if (element) {
+            element.disabled = busy;
+          }
+        });
+    
+        elements.importOperationStatus.textContent =
+          busy ? message : '';
+      }
+    
+      function showImportError_(message) {
+        elements.globalSuccess.classList.add('hidden');
+        elements.globalError.textContent = message;
+        elements.globalError.classList.remove('hidden');
+      }
+    
+      function showImportSuccess_(message) {
+        elements.globalError.classList.add('hidden');
+        elements.globalSuccess.textContent = message;
+        elements.globalSuccess.classList.remove('hidden');
+      }
+    
+      function hideImportAlerts_() {
+        elements.globalError.classList.add('hidden');
+        elements.globalSuccess.classList.add('hidden');
+      }
+    
+      function callImportServer_(functionName, argument) {
+        return new Promise((resolve, reject) => {
+          const runner = google.script.run
+            .withSuccessHandler((response) => {
+              if (!response || response.ok !== true) {
+                reject(
+                  new Error(
+                    response &&
+                    response.error &&
+                    response.error.message
+                      ? response.error.message
+                      : 'The import server returned an invalid response.'
+                  )
+                );
+                return;
+              }
+    
+              resolve(response.data);
+            })
+            .withFailureHandler((error) => {
+              reject(
+                new Error(
+                  error && error.message
+                    ? error.message
+                    : String(error)
+                )
+              );
+            });
+    
+          if (argument === undefined) {
+            runner[functionName]();
+          } else {
+            runner[functionName](argument);
+          }
+        });
+      }
+    
+      function formatImportStatus_(value) {
+        return String(value || '')
+          .replace(/_/g, ' ')
+          .toLowerCase()
+          .replace(/\b\w/g, (character) => character.toUpperCase());
+      }
+    
+      function formatImportDate_(value) {
+        if (!value) {
+          return '—';
+        }
+    
+        const date = new Date(value);
+    
+        if (Number.isNaN(date.getTime())) {
+          return String(value);
+        }
+    
+        return date.toLocaleString();
+      }
+    
+      function clampImportInteger_(value, minimum, maximum, fallback) {
+        const number = Number(value);
+    
+        if (!Number.isFinite(number)) {
+          return fallback;
+        }
+    
+        return Math.min(
+          maximum,
+          Math.max(minimum, Math.floor(number))
+        );
+      }
+    
+      function escapeImportHtml_(value) {
+        return String(value == null ? '' : value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+    
+      function escapeImportAttribute_(value) {
+        return escapeImportHtml_(value);
+      }
+    })();
+    </script>
