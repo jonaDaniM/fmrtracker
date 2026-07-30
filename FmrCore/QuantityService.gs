@@ -1,332 +1,157 @@
 /**
- * Quantity rollups and baseline migration for FMR line/header balances.
+ * Quantity summaries are derived from append-only transactions.
+ *
+ * Important Step 3 rule:
+ * - BAG reserves material but does not independently count as locating it.
+ * - A Bag & Tag action creates CONFIRM_AVAILABLE only for the portion not already available,
+ *   then creates BAG for the full reserved quantity.
  */
+function summarizeLineQuantities_(lineId) {
+  const transactions = getSheetData_(FMR_CORE.SHEETS.TRANSACTIONS).rows
+    .filter(row => normalize_(row.FMR_Line_ID) === normalize_(lineId));
 
-function totalMaterials_(materials) {
-  const total = field =>
-    (materials || []).reduce((sum, item) => sum + number_(item[field]), 0);
+  const sum = type => transactions
+    .filter(row => normalizeUpper_(row.Transaction_Type) === type)
+    .reduce((total, row) => total + number_(row.Quantity), 0);
+
+  const confirmed =
+    sum('CONFIRM_AVAILABLE') +
+    sum('DIRECT_ISSUE') +
+    sum('QUANTITY_ADJUSTMENT');
+
+  const activeBagged =
+    sum('BAG') -
+    sum('RELEASE_BAG') -
+    sum('ISSUE_FROM_BAG');
+
+  const issued =
+    sum('DIRECT_ISSUE') +
+    sum('ISSUE_FROM_AVAILABLE') +
+    sum('ISSUE_FROM_BAG') -
+    sum('RETURN');
+
+  const pendingBackorder =
+    sum('BACKORDER_REQUESTED') -
+    sum('BACKORDER_CONFIRMED') -
+    sum('BACKORDER_REJECTED');
+
+  const confirmedBackorder =
+    sum('BACKORDER_CONFIRMED') -
+    sum('BACKORDER_CLEARED');
 
   return {
-    requested: total('qtyRequested'),
-    located: total('qtyConfirmedLocated'),
-    bagged: total('qtyActiveBagged'),
-    available: total('qtyAvailable'),
-    issued: total('qtyIssued'),
-    pendingBackorder: total('qtyPendingBackorder'),
-    confirmedBackorder: total('qtyConfirmedBackorder')
+    confirmedLocated: Math.max(0, confirmed),
+    activeBagged: Math.max(0, activeBagged),
+    available: Math.max(0, confirmed - issued - activeBagged),
+    issued: Math.max(0, issued),
+    pendingBackorder: Math.max(0, pendingBackorder),
+    confirmedBackorder: Math.max(0, confirmedBackorder)
   };
 }
 
-function deriveLineBalances_(line, transactions, bagItems) {
+function getLineOperationalState_(line) {
   const requested = number_(line.Qty_Requested);
-  let located = 0;
-  let available = 0;
-  let bagged = 0;
-  let issued = 0;
-  let pendingBackorder = 0;
-  let confirmedBackorder = 0;
-  let dateFirstLocated = '';
-  let dateFirstBagged = '';
-  let dateFirstIssued = '';
-  let storageLocation = normalize_(line.Storage_Location);
-
-  (transactions || []).forEach(tx => {
-    const type = normalizeUpper_(tx.Transaction_Type);
-    const qty = number_(tx.Quantity);
-    const stamp = tx.Timestamp || '';
-
-    if (type === 'CONFIRM_AVAILABLE' || type === 'AVAILABLE_CONFIRMED') {
-      located += qty;
-      available += qty;
-      if (!dateFirstLocated) dateFirstLocated = stamp;
-      if (normalize_(tx.Storage_Location)) {
-        storageLocation = normalize_(tx.Storage_Location);
-      }
-    } else if (type === 'BAG' || type === 'BAGGED') {
-      available = Math.max(0, available - qty);
-      bagged += qty;
-      if (!dateFirstBagged) dateFirstBagged = stamp;
-      if (normalize_(tx.Storage_Location)) {
-        storageLocation = normalize_(tx.Storage_Location);
-      }
-    } else if (type === 'DIRECT_ISSUE' || type === 'LOCATE_AND_ISSUE') {
-      located += qty;
-      issued += qty;
-      if (!dateFirstLocated) dateFirstLocated = stamp;
-      if (!dateFirstIssued) dateFirstIssued = stamp;
-      if (normalize_(tx.Storage_Location)) {
-        storageLocation = normalize_(tx.Storage_Location);
-      }
-    } else if (type === 'ISSUE_FROM_AVAILABLE' || type === 'ISSUE_AVAILABLE') {
-      available = Math.max(0, available - qty);
-      issued += qty;
-      if (!dateFirstIssued) dateFirstIssued = stamp;
-    } else if (type === 'ISSUE_FROM_BAG') {
-      bagged = Math.max(0, bagged - qty);
-      issued += qty;
-      if (!dateFirstIssued) dateFirstIssued = stamp;
-    } else if (type === 'BACKORDER_REQUESTED') {
-      pendingBackorder += qty;
-    } else if (type === 'BACKORDER_CONFIRMED') {
-      pendingBackorder = Math.max(0, pendingBackorder - qty);
-      confirmedBackorder += qty;
-    } else if (type === 'BACKORDER_REJECTED') {
-      pendingBackorder = Math.max(0, pendingBackorder - qty);
-    }
-  });
-
-  const activeBagQty = (bagItems || [])
-    .filter(item =>
-      normalize_(item.FMR_Line_ID) === normalize_(line.FMR_Line_ID) &&
-      number_(item.Qty_Remaining_In_Bag) > 0 &&
-      normalizeUpper_(item.Status || 'ACTIVE') === 'ACTIVE'
-    )
-    .reduce((sum, item) => sum + number_(item.Qty_Remaining_In_Bag), 0);
-
-  if (activeBagQty > 0 || (bagItems || []).length) {
-    bagged = activeBagQty;
-  }
-
-  const notYetLocated = Math.max(
-    0,
-    requested - located - pendingBackorder - confirmedBackorder
-  );
-  const remainingRequirement = Math.max(
-    0,
-    requested - issued - confirmedBackorder
-  );
-
+  const summary = summarizeLineQuantities_(line.FMR_Line_ID);
   return {
-    Qty_Confirmed_Located: roundQty_(located),
-    Qty_Active_Bagged: roundQty_(bagged),
-    Qty_Available: roundQty_(Math.max(0, available)),
-    Qty_Issued: roundQty_(issued),
-    Qty_Pending_Backorder: roundQty_(pendingBackorder),
-    Qty_Confirmed_Backorder: roundQty_(confirmedBackorder),
-    Qty_Not_Yet_Located: roundQty_(notYetLocated),
-    Qty_Remaining_Requirement: roundQty_(remainingRequirement),
-    Line_Status: deriveLineStatus_({
-      requested,
-      located,
-      available: Math.max(0, available),
-      bagged,
-      issued,
-      pendingBackorder,
-      confirmedBackorder,
-      notYetLocated,
-      remainingRequirement
-    }),
-    Storage_Location: storageLocation,
-    Date_First_Located: dateFirstLocated || line.Date_First_Located || '',
-    Date_First_Bagged: dateFirstBagged || line.Date_First_Bagged || '',
-    Date_First_Issued: dateFirstIssued || line.Date_First_Issued || ''
+    requested,
+    ...summary,
+    notYetLocated: Math.max(0, requested - summary.confirmedLocated),
+    remainingRequirement: Math.max(0, requested - summary.issued),
+    maximumNewBackorder: Math.max(
+      0,
+      requested -
+        summary.confirmedLocated -
+        summary.pendingBackorder -
+        summary.confirmedBackorder
+    )
   };
 }
 
-function deriveLineStatus_(balances) {
-  if (balances.requested <= 0) return 'Open';
-  if (balances.remainingRequirement <= 0) {
-    return balances.confirmedBackorder > 0 ? 'Closed With Backorder' : 'Issued';
-  }
-  if (balances.issued > 0) return 'Partially Issued';
-  if (balances.bagged > 0 && balances.available > 0) return 'Partially Located';
-  if (balances.bagged > 0) return 'Bagged';
-  if (balances.available > 0 || balances.located > 0) return 'Located';
-  if (balances.pendingBackorder > 0) return 'Pending Backorder';
+function calculateLineStatus_(requested, summary) {
+  if (summary.issued >= requested && requested > 0) return 'Issued';
+  if (summary.issued > 0) return 'Partially Issued';
+  if (summary.confirmedBackorder > 0) return 'Backordered';
+  if (summary.pendingBackorder > 0) return 'Pending Backorder';
+  if (summary.activeBagged >= requested && requested > 0) return 'Bagged';
+  if (summary.activeBagged > 0) return 'Partially Bagged';
+  if (summary.confirmedLocated >= requested && requested > 0) return 'Located';
+  if (summary.confirmedLocated > 0) return 'Partially Located';
   return 'Open';
 }
 
-function deriveHeaderStatus_(currentStatus, lines) {
-  const statuses = (lines || []).map(line => normalizeUpper_(line.Line_Status));
-  if (!statuses.length) return normalize_(currentStatus) || 'Approved';
-
-  if (statuses.every(status => status === 'ISSUED' || status === 'CLOSED WITH BACKORDER')) {
-    return 'Issued';
-  }
-  if (statuses.some(status => status.includes('ISSUED'))) return 'Partially Issued';
-  if (statuses.every(status =>
-    ['LOCATED', 'BAGGED', 'PARTIALLY LOCATED'].includes(status)
-  )) {
-    return 'Located';
-  }
-  if (statuses.some(status =>
-    ['LOCATED', 'BAGGED', 'PARTIALLY LOCATED', 'PENDING BACKORDER'].includes(status)
-  )) {
-    return 'Partially Located';
-  }
-  if (statuses.some(status => status === 'PENDING BACKORDER')) {
-    return 'Sourcing';
-  }
-
-  const preserved = normalize_(currentStatus);
-  return preserved || 'Approved';
-}
-
-function refreshLineSummary_(fmrLineId) {
-  const lineId = normalize_(fmrLineId);
-  if (!lineId) throw new Error('FMR line ID is required.');
-
+function refreshLineSummary_(lineId) {
   const line = findRecord_(FMR_CORE.SHEETS.LINES, 'FMR_Line_ID', lineId);
   if (!line) throw new Error(`FMR line not found: ${lineId}`);
 
-  const transactions = getSheetData_(FMR_CORE.SHEETS.TRANSACTIONS).rows.filter(
-    row => normalize_(row.FMR_Line_ID) === lineId
-  );
-  const bagItems = getSheetData_(FMR_CORE.SHEETS.BAG_TAG_ITEMS).rows.filter(
-    row => normalize_(row.FMR_Line_ID) === lineId
-  );
-
-  const patch = deriveLineBalances_(line, transactions, bagItems);
-  patch.Updated_At = now_();
+  const state = getLineOperationalState_(line);
+  const patch = {
+    Qty_Confirmed_Located: state.confirmedLocated,
+    Qty_Active_Bagged: state.activeBagged,
+    Qty_Available: state.available,
+    Qty_Issued: state.issued,
+    Qty_Pending_Backorder: state.pendingBackorder,
+    Qty_Confirmed_Backorder: state.confirmedBackorder,
+    Qty_Not_Yet_Located: state.notYetLocated,
+    Qty_Remaining_Requirement: state.remainingRequirement,
+    Line_Status: calculateLineStatus_(state.requested, state),
+    Updated_At: now_()
+  };
 
   updateRecord_(FMR_CORE.SHEETS.LINES, 'FMR_Line_ID', lineId, patch);
-  return findRecord_(FMR_CORE.SHEETS.LINES, 'FMR_Line_ID', lineId);
+  return {...line, ...patch};
+}
+
+function calculateFmrStatus_(currentStatus, lines) {
+  const preserved = normalize_(currentStatus);
+  if (['Closed', 'Cancelled', 'On Hold'].includes(preserved)) return preserved;
+  if (!lines.length) return preserved || 'Draft';
+
+  const allIssued = lines.every(line => number_(line.Qty_Remaining_Requirement) === 0);
+  const anyIssued = lines.some(line => number_(line.Qty_Issued) > 0);
+  const anyBackorder = lines.some(line =>
+    number_(line.Qty_Pending_Backorder) > 0 ||
+    number_(line.Qty_Confirmed_Backorder) > 0
+  );
+  const allLocated = lines.every(line =>
+    number_(line.Qty_Confirmed_Located) >= number_(line.Qty_Requested)
+  );
+  const anyLocated = lines.some(line => number_(line.Qty_Confirmed_Located) > 0);
+
+  if (allIssued) return 'Issued';
+  if (anyIssued) return 'Partially Issued';
+  if (anyBackorder) return 'Sourcing';
+  if (allLocated) return 'Located';
+  if (anyLocated) return 'Partially Located';
+  return preserved || 'Approved';
 }
 
 function refreshFmrHeaderSummary_(fmrId) {
-  const id = normalize_(fmrId);
-  if (!id) throw new Error('FMR ID is required.');
+  const header = findRecord_(FMR_CORE.SHEETS.HEADERS, 'FMR_ID', fmrId);
+  if (!header) throw new Error(`FMR not found: ${fmrId}`);
 
-  const header = findRecord_(FMR_CORE.SHEETS.HEADERS, 'FMR_ID', id);
-  if (!header) throw new Error(`FMR not found: ${id}`);
+  const lines = getSheetData_(FMR_CORE.SHEETS.LINES).rows
+    .filter(row => normalize_(row.FMR_ID) === normalize_(fmrId));
 
-  const lines = getSheetData_(FMR_CORE.SHEETS.LINES).rows.filter(
-    row => normalize_(row.FMR_ID) === id
-  );
-
-  const sum = field =>
-    lines.reduce((total, row) => total + number_(row[field]), 0);
-
+  const sum = field => lines.reduce((total, row) => total + number_(row[field]), 0);
   const qtyRequested = sum('Qty_Requested');
   const qtyIssued = sum('Qty_Issued');
+
   const patch = {
+    Current_Status: calculateFmrStatus_(header.Current_Status, lines),
     Total_Lines: lines.length,
-    Qty_Requested: roundQty_(qtyRequested),
-    Qty_Confirmed_Located: roundQty_(sum('Qty_Confirmed_Located')),
-    Qty_Active_Bagged: roundQty_(sum('Qty_Active_Bagged')),
-    Qty_Available: roundQty_(sum('Qty_Available')),
-    Qty_Issued: roundQty_(qtyIssued),
-    Qty_Pending_Backorder: roundQty_(sum('Qty_Pending_Backorder')),
-    Qty_Confirmed_Backorder: roundQty_(sum('Qty_Confirmed_Backorder')),
-    Qty_Remaining_Requirement: roundQty_(sum('Qty_Remaining_Requirement')),
+    Qty_Requested: qtyRequested,
+    Qty_Confirmed_Located: sum('Qty_Confirmed_Located'),
+    Qty_Active_Bagged: sum('Qty_Active_Bagged'),
+    Qty_Available: sum('Qty_Available'),
+    Qty_Issued: qtyIssued,
+    Qty_Pending_Backorder: sum('Qty_Pending_Backorder'),
+    Qty_Confirmed_Backorder: sum('Qty_Confirmed_Backorder'),
+    Qty_Remaining_Requirement: Math.max(0, qtyRequested - qtyIssued),
     Fulfillment_Pct: qtyRequested > 0 ? qtyIssued / qtyRequested : 0,
-    Current_Status: deriveHeaderStatus_(header.Current_Status, lines),
     Updated_At: now_(),
     Last_Activity_At: now_()
   };
 
-  updateRecord_(FMR_CORE.SHEETS.HEADERS, 'FMR_ID', id, patch);
-  return findRecord_(FMR_CORE.SHEETS.HEADERS, 'FMR_ID', id);
-}
-
-function migrateExistingQuantityBaselines_(userEmail) {
-  const user = getAuthorizedUser_(userEmail, [
-    FMR_CORE.ROLES.ADMIN,
-    FMR_CORE.ROLES.PLANNER,
-    FMR_CORE.ROLES.MATERIAL_CONTROL
-  ], 'ADMIN');
-
-  clearAllCaches_();
-
-  const lines = getSheetData_(FMR_CORE.SHEETS.LINES).rows;
-  const transactionsByLine = groupBy_(
-    getSheetData_(FMR_CORE.SHEETS.TRANSACTIONS).rows,
-    'FMR_Line_ID'
-  );
-  const bagItemsByLine = groupBy_(
-    getSheetData_(FMR_CORE.SHEETS.BAG_TAG_ITEMS).rows,
-    'FMR_Line_ID'
-  );
-
-  let migratedLines = 0;
-  let skippedLines = 0;
-  const affected = {};
-
-  lines.forEach(line => {
-    const lineId = normalize_(line.FMR_Line_ID);
-    if (!lineId) {
-      skippedLines += 1;
-      return;
-    }
-
-    const next = deriveLineBalances_(
-      line,
-      transactionsByLine[lineId] || [],
-      bagItemsByLine[lineId] || []
-    );
-
-    const changed = Object.keys(next).some(
-      key => normalize_(line[key]) !== normalize_(next[key]) &&
-        number_(line[key]) !== number_(next[key])
-    );
-
-    if (!changed) {
-      skippedLines += 1;
-      return;
-    }
-
-    next.Updated_At = now_();
-    updateRecord_(FMR_CORE.SHEETS.LINES, 'FMR_Line_ID', lineId, next);
-    affected[normalize_(line.FMR_ID)] = true;
-    migratedLines += 1;
-  });
-
-  Object.keys(affected).forEach(fmrId => {
-    if (fmrId) refreshFmrHeaderSummary_(fmrId);
-  });
-
-  writeAudit_(
-    'SYSTEM',
-    database_().getId(),
-    'MIGRATE_QUANTITY_BASELINES',
-    user,
-    '',
-    {
-      migratedLines,
-      skippedLines,
-      affectedFmrs: Object.keys(affected).filter(Boolean).length
-    }
-  );
-
-  return {
-    migratedLines,
-    skippedLines,
-    affectedFmrs: Object.keys(affected).filter(Boolean).length
-  };
-}
-
-function actionLimitsForLine_(line) {
-  const requested = number_(line.Qty_Requested);
-  const located = number_(line.Qty_Confirmed_Located);
-  const available = number_(line.Qty_Available);
-  const pending = number_(line.Qty_Pending_Backorder);
-  const confirmed = number_(line.Qty_Confirmed_Backorder);
-  const notYetLocated = Math.max(
-    0,
-    number_(line.Qty_Not_Yet_Located) ||
-      (requested - located - pending - confirmed)
-  );
-
-  return {
-    confirmAvailable: roundQty_(notYetLocated),
-    bag: roundQty_(available),
-    directIssue: roundQty_(notYetLocated),
-    issueAvailable: roundQty_(available),
-    backorder: roundQty_(notYetLocated)
-  };
-}
-
-function roundQty_(value) {
-  const number = number_(value);
-  return Math.round(number * 1000) / 1000;
-}
-
-function groupBy_(rows, field) {
-  return (rows || []).reduce((map, row) => {
-    const key = normalize_(row[field]);
-    if (!key) return map;
-    if (!map[key]) map[key] = [];
-    map[key].push(row);
-    return map;
-  }, {});
+  updateRecord_(FMR_CORE.SHEETS.HEADERS, 'FMR_ID', fmrId, patch);
+  return {...header, ...patch};
 }

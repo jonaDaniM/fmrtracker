@@ -1,4 +1,4 @@
-
+//PublicApi.gs
 function getCoreVersion() {
   return FMR_CORE.VERSION;
 }

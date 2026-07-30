@@ -1,3 +1,4 @@
+//ValidationService.gs
 function validateFoundation_(userEmail) {
   const user = getAuthorizedUser_(userEmail, [FMR_CORE.ROLES.ADMIN], 'ADMIN');
   const requiredSheets = Object.values(FMR_CORE.SHEETS);

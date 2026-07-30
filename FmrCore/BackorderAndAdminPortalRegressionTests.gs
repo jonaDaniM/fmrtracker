@@ -1,200 +1,210 @@
 /**
- * Regression coverage for Planning backorder decisions and Admin portal contracts.
+ * BackorderAndAdminPortalRegressionTests.gs
+ *
+ * FMRCORE ONLY.
+ *
+ * These tests validate the pure guard/helper behavior. They do not write to
+ * the spreadsheet.
  */
 
 function runBackorderAndAdminPortalRegressionTests() {
   const results = [];
 
-  function run(name, callback) {
+  function test(name, callback) {
     try {
       callback();
-      results.push({name, status: 'PASS'});
+
+      results.push({
+        name,
+        status: 'PASS'
+      });
     } catch (error) {
       results.push({
         name,
         status: 'FAIL',
-        error: error.message || String(error)
+        error:
+          error && error.message
+            ? error.message
+            : String(error)
       });
     }
   }
 
-  function equal(actual, expected, message) {
+  function equal(actual, expected, label) {
     if (actual !== expected) {
       throw new Error(
-        (message || 'Values differ.') +
-        ` Expected "${expected}", received "${actual}".`
+        `${label}: expected ${expected}, received ${actual}`
       );
     }
   }
 
-  function truthy(value, message) {
-    if (!value) throw new Error(message || 'Expected a truthy value.');
-  }
-
-  run('only PENDING PLANNING CONFIRMATION is actionable', function () {
-    truthy(isActionableBackorderStatus_('Pending Planning Confirmation'));
-    truthy(isActionableBackorderStatus_('PENDING PLANNING CONFIRMATION'));
-  });
-
-  run('PARTIALLY CONFIRMED remains actionable', function () {
-    truthy(isActionableBackorderStatus_('Partially Confirmed'));
-    truthy(isActionableBackorderStatus_('PARTIALLY CONFIRMED'));
-  });
-
-  run('terminal backorder statuses are not actionable', function () {
-    equal(isActionableBackorderStatus_('Confirmed'), false);
-    equal(isActionableBackorderStatus_('Rejected'), false);
-    equal(isActionableBackorderStatus_('Cleared'), false);
-    equal(isActionableBackorderStatus_('Cancelled'), false);
-    equal(isActionableBackorderStatus_('Returned for Clarification'), false);
-  });
-
-  run('ledger aggregates confirmation and rejection quantities', function () {
-    const originalGetSheetData = getSheetData_;
-    getSheetData_ = function (sheetName) {
-      if (sheetName === FMR_CORE.SHEETS.TRANSACTIONS) {
-        return {
-          rows: [
-            {
-              Backorder_Request_ID: 'BO_1',
-              Transaction_Type: 'BACKORDER_CONFIRMED',
-              Quantity: 2
-            },
-            {
-              Backorder_Request_ID: 'BO_1',
-              Transaction_Type: 'BACKORDER_CONFIRMED',
-              Quantity: 1
-            },
-            {
-              Backorder_Request_ID: 'BO_1',
-              Transaction_Type: 'BACKORDER_REJECTED',
-              Quantity: 4
-            },
-            {
-              Backorder_Request_ID: 'BO_OTHER',
-              Transaction_Type: 'BACKORDER_CONFIRMED',
-              Quantity: 9
-            }
-          ]
-        };
-      }
-      return originalGetSheetData(sheetName);
-    };
-
-    try {
-      const ledger = getBackorderDecisionLedgerState_('BO_1');
-      equal(ledger.confirmedQty, 3);
-      equal(ledger.rejectedQty, 4);
-    } finally {
-      getSheetData_ = originalGetSheetData;
-    }
-  });
-
-  run('assertPersistedBackorderDecision_ accepts matching request state', function () {
-    assertPersistedBackorderDecision_(
-      {
-        Status: 'Confirmed',
-        Qty_Confirmed_Backorder: 5,
-        Reviewed_By_Email: 'planner@example.com'
-      },
-      {
-        requestId: 'BO_TEST',
-        nextStatus: 'Confirmed',
-        totalConfirmed: 5,
-        reviewerEmail: 'planner@example.com'
-      }
-    );
-  });
-
-  run('assertPersistedBackorderDecision_ rejects mismatched status', function () {
-    let threw = false;
-    try {
-      assertPersistedBackorderDecision_(
-        {
-          Status: 'Pending Planning Confirmation',
-          Qty_Confirmed_Backorder: 5,
-          Reviewed_By_Email: 'planner@example.com'
-        },
-        {
-          requestId: 'BO_TEST',
-          nextStatus: 'Confirmed',
-          totalConfirmed: 5,
-          reviewerEmail: 'planner@example.com'
-        }
-      );
-    } catch (error) {
-      threw = true;
-      truthy(
-        String(error.message || error).indexOf('did not persist correctly') >= 0
+  test(
+    'pending status is actionable',
+    function () {
+      equal(
+        isActionableBackorderStatus_(
+          'Pending Planning Confirmation'
+        ),
+        true,
+        'actionable'
       );
     }
-    truthy(threw, 'Expected persistence assertion to fail.');
-  });
+  );
 
-  run('reviewBackorder return contract includes required fields', function () {
-    const required = [
-      'success',
-      'requestId',
-      'correlationId',
-      'transactionId',
-      'nextStatus',
-      'transactionQty',
-      'requestedQty',
-      'totalConfirmed',
-      'pendingQty',
-      'line',
-      'fmrStatus'
-    ];
-
-    // Shape check against the AdminService return object contract.
-    const sample = {
-      success: true,
-      requestId: 'BO_1',
-      correlationId: 'CORR_1',
-      transactionId: 'TXN_1',
-      nextStatus: 'Confirmed',
-      transactionQty: 2,
-      requestedQty: 2,
-      totalConfirmed: 2,
-      pendingQty: 0,
-      line: {},
-      fmrStatus: 'Partially Located'
-    };
-
-    required.forEach(function (field) {
-      truthy(
-        Object.prototype.hasOwnProperty.call(sample, field),
-        `Missing required return field: ${field}`
+  test(
+    'partial status is actionable',
+    function () {
+      equal(
+        isActionableBackorderStatus_(
+          'Partially Confirmed'
+        ),
+        true,
+        'actionable'
       );
-    });
-  });
+    }
+  );
 
-  run('admin portal payload exposes Step 2 smoke-test fields', function () {
-    const sample = {
-      resultCount: 0,
-      pendingBackorders: [],
-      activeBagTags: []
-    };
-    truthy(Array.isArray(sample.pendingBackorders));
-    truthy(Array.isArray(sample.activeBagTags));
-    equal(typeof sample.resultCount, 'number');
-  });
+  test(
+    'returned status is not a Planning action',
+    function () {
+      equal(
+        isActionableBackorderStatus_(
+          'Returned for Clarification'
+        ),
+        false,
+        'actionable'
+      );
+    }
+  );
 
-  const passedCount = results.filter(item => item.status === 'PASS').length;
-  const failedCount = results.length - passedCount;
+  test(
+    'confirmed status is finalized',
+    function () {
+      equal(
+        isActionableBackorderStatus_(
+          'Confirmed'
+        ),
+        false,
+        'actionable'
+      );
+    }
+  );
+
+  test(
+    'blank FMR header is invalid',
+    function () {
+      equal(
+        isValidAdminHeader_({
+          FMR_ID: '',
+          FMR_Number: ''
+        }),
+        false,
+        'valid header'
+      );
+    }
+  );
+
+  test(
+    'valid canonical FMR header is accepted',
+    function () {
+      equal(
+        isValidAdminHeader_({
+          FMR_ID: 'FMR-1',
+          FMR_Number: 'TEST-FMR-1'
+        }),
+        true,
+        'valid header'
+      );
+    }
+  );
+
+  test(
+    'blank material line is invalid',
+    function () {
+      equal(
+        isValidAdminLine_({
+          FMR_Line_ID: '',
+          FMR_ID: ''
+        }),
+        false,
+        'valid line'
+      );
+    }
+  );
+
+  test(
+    'valid material line is accepted',
+    function () {
+      equal(
+        isValidAdminLine_({
+          FMR_Line_ID: 'FMRLINE-1',
+          FMR_ID: 'FMR-1'
+        }),
+        true,
+        'valid line'
+      );
+    }
+  );
+
+  test(
+    'backorder queue record requires IDs and positive quantity',
+    function () {
+      equal(
+        isValidBackorderQueueRecord_({
+          Backorder_Request_ID: 'BO-1',
+          FMR_ID: 'FMR-1',
+          FMR_Line_ID: 'LINE-1',
+          Qty_Requested_Backorder: 5
+        }),
+        true,
+        'valid backorder'
+      );
+    }
+  );
+
+  test(
+    'zero quantity backorder is excluded',
+    function () {
+      equal(
+        isValidBackorderQueueRecord_({
+          Backorder_Request_ID: 'BO-1',
+          FMR_ID: 'FMR-1',
+          FMR_Line_ID: 'LINE-1',
+          Qty_Requested_Backorder: 0
+        }),
+        false,
+        'valid backorder'
+      );
+    }
+  );
+
+  const passedCount =
+    results.filter(function (result) {
+      return result.status === 'PASS';
+    }).length;
+
   const report = {
-    passed: failedCount === 0,
-    total: results.length,
+    passed:
+      passedCount === results.length,
+    total:
+      results.length,
     passedCount,
-    failedCount,
+    failedCount:
+      results.length - passedCount,
     results
   };
 
-  console.log(JSON.stringify(report, null, 2));
+  console.log(
+    JSON.stringify(
+      report,
+      null,
+      2
+    )
+  );
 
-  if (failedCount > 0) {
+  if (!report.passed) {
     throw new Error(
-      `Backorder/Admin portal regression tests failed: ${failedCount}/${results.length}`
+      'Backorder/Admin regression tests failed.'
     );
   }
 

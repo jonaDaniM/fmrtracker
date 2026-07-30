@@ -1,4 +1,4 @@
-
+// Phase4_CoordinateBomParser.gs
 function parseVisionIsoPage(context, response) {
   const safeContext = normalizeVisionContext_(context);
 

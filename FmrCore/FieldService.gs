@@ -1,43 +1,14 @@
-/**
- * Field and Admin portal services, serializers, and field transaction actions.
- */
-
-function getPortalBootstrap_(userEmail, view) {
-  const requestedView = normalizeLower_(view) || 'field';
-  const roles = [
+// Field Service gs
+function getFieldPortalData_(userEmail, lineNumber, sheetNumber, auditSearch) {
+  const user = getAuthorizedUser_(userEmail, [
     FMR_CORE.ROLES.ADMIN,
     FMR_CORE.ROLES.PLANNER,
     FMR_CORE.ROLES.MATERIAL_CONTROL,
     FMR_CORE.ROLES.FIELD_HANDLER,
     FMR_CORE.ROLES.FOREMAN,
-    FMR_CORE.ROLES.SUPERINTENDENT,
-    FMR_CORE.ROLES.LEADERSHIP,
-    FMR_CORE.ROLES.AUDITOR
-  ];
+    FMR_CORE.ROLES.SUPERINTENDENT
+  ], 'FIELD');
 
-  const sourceInterface =
-    requestedView === 'admin' ? 'ADMIN' :
-    requestedView === 'import' ? 'IMPORT' :
-    'FIELD';
-
-  const user = getAuthorizedUser_(userEmail, roles, sourceInterface);
-
-  return {
-    displayName: user.name,
-    userEmail: user.email,
-    role: user.role,
-    coreVersion: FMR_CORE.VERSION,
-    view: requestedView,
-    canPerformFieldTransactions: user.canPerformFieldTransactions,
-    canReviewBackorders: user.canReviewBackorders
-  };
-}
-
-function getIssueHandlers_() {
-  return listHandlerUsers_('Can_Issue');
-}
-
-function getFieldPortalData_(userEmail, lineNumber, sheetNumber, auditSearch) {
   const cards = searchByLineAndSheet_(
     userEmail,
     lineNumber,
@@ -46,182 +17,110 @@ function getFieldPortalData_(userEmail, lineNumber, sheetNumber, auditSearch) {
     auditSearch !== false
   );
 
-  const user = getAuthorizedUser_(userEmail, [
-    FMR_CORE.ROLES.ADMIN,
-    FMR_CORE.ROLES.PLANNER,
-    FMR_CORE.ROLES.MATERIAL_CONTROL,
-    FMR_CORE.ROLES.FIELD_HANDLER,
-    FMR_CORE.ROLES.FOREMAN,
-    FMR_CORE.ROLES.SUPERINTENDENT,
-    FMR_CORE.ROLES.LEADERSHIP,
-    FMR_CORE.ROLES.AUDITOR
-  ], 'FIELD');
-
-  const enrichedCards = cards.map(card => {
-    const materials = (card.materials || []).map(material => {
+  const activeTagData = getActiveBagDataByLine_();
+  const enrichedCards = cards.map(card => ({
+    ...card,
+    materials: card.materials.map(material => {
       const line = findRecord_(FMR_CORE.SHEETS.LINES, 'FMR_Line_ID', material.fmrLineId);
-      return line ? serializeMaterialLine_(line) : material;
-    });
-    return {
-      ...card,
-      materials,
-      totals: totalMaterials_(materials)
-    };
-  });
+      const state = line ? getLineOperationalState_(line) : {
+        requested: material.qtyRequested,
+        confirmedLocated: material.qtyConfirmedLocated,
+        activeBagged: material.qtyActiveBagged,
+        available: material.qtyAvailable,
+        issued: material.qtyIssued,
+        pendingBackorder: material.qtyPendingBackorder,
+        confirmedBackorder: material.qtyConfirmedBackorder,
+        notYetLocated: Math.max(0, material.qtyRequested - material.qtyConfirmedLocated),
+        remainingRequirement: Math.max(0, material.qtyRequested - material.qtyIssued),
+        maximumNewBackorder: 0
+      };
+      const bagData = activeTagData[material.fmrLineId] || [];
+
+      return {
+        ...material,
+        qtyConfirmedLocated: state.confirmedLocated,
+        qtyActiveBagged: state.activeBagged,
+        qtyAvailable: state.available,
+        qtyIssued: state.issued,
+        qtyPendingBackorder: state.pendingBackorder,
+        qtyConfirmedBackorder: state.confirmedBackorder,
+        qtyRemainingRequirement: state.remainingRequirement,
+        actionLimits: {
+          confirmAvailable: state.notYetLocated,
+          bag: Math.max(0, state.available + state.notYetLocated),
+          directIssue: state.notYetLocated,
+          issueAvailable: state.available,
+          backorder: state.maximumNewBackorder
+        },
+        activeBags: bagData,
+        eligibleExistingTags: uniqueEligibleTags_(bagData)
+      };
+    })
+  }));
 
   return {
-    cards: enrichedCards,
-    resultCount: enrichedCards.length,
-    generatedAt: formatTimestamp_(now_()),
+    generatedAt: formatDateTime_(now_()),
     user: {
-      email: user.email,
-      name: user.name,
+      userEmail: user.email,
+      displayName: user.name,
       role: user.role,
-      canTransact: user.canTransact
+      canTransact: canPerformFieldTransactions_(user.role)
     },
     options: {
-      issueHandlers: listHandlerUsers_('Can_Issue'),
-      bagHandlers: listHandlerUsers_('Can_Bag'),
-      backorderReporters: listHandlerUsers_('Can_Request_Backorder'),
-      backorderReasons: getListValues_(FMR_CORE.LIST_FIELDS.BACKORDER_REASON)
-    }
+      ...getFieldPersonnelOptions_(),
+      backorderReasons: getListValues_('Backorder_Reason')
+    },
+    resultCount: enrichedCards.length,
+    cards: enrichedCards
   };
 }
 
-function getAdminPortalData_(userEmail, filters) {
-  const user = getAuthorizedUser_(userEmail, [
-    FMR_CORE.ROLES.ADMIN,
-    FMR_CORE.ROLES.PLANNER,
-    FMR_CORE.ROLES.MATERIAL_CONTROL,
-    FMR_CORE.ROLES.FOREMAN,
-    FMR_CORE.ROLES.SUPERINTENDENT,
-    FMR_CORE.ROLES.LEADERSHIP,
-    FMR_CORE.ROLES.AUDITOR
-  ], 'ADMIN');
-
-  const source = filters || {};
-  const filterFmr = normalizeUpper_(source.fmrNumber);
-  const filterIwp = normalizeUpper_(source.iwpNumber);
-  const filterIsoLine = normalizeUpper_(source.isoLineNumber);
-  const filterIsoSheet = normalizeUpper_(source.isoSheet);
-  const filterStatus = normalizeUpper_(source.status);
-  const filterCommodity = normalizeUpper_(source.commodityCode);
-
-  const headers = getSheetData_(FMR_CORE.SHEETS.HEADERS).rows;
-  const lines = getSheetData_(FMR_CORE.SHEETS.LINES).rows;
-  const linesByFmr = groupBy_(lines, 'FMR_ID');
-
-  const allStatuses = uniqueSorted_(headers.map(row => row.Current_Status));
-  const allIwps = uniqueSorted_(headers.map(row => row.IWP_Number));
-
-  let fmrs = headers
-    .map(header => {
-      const fmrId = normalize_(header.FMR_ID);
-      const materialRows = linesByFmr[fmrId] || [];
-      const materials = materialRows.map(serializeMaterialLine_);
-      return {
-        fmrId,
-        fmrNumber: normalize_(header.FMR_Number),
-        iwpNumber: normalize_(header.IWP_Number),
-        status: normalize_(header.Current_Status),
-        priority: normalize_(header.Priority),
-        requestedBy: normalize_(header.Requested_By),
-        isoLineNumber: materials[0] ? materials[0].isoLineNumber : '',
-        isoSheet: materials[0] ? materials[0].isoSheet : '',
-        materials,
-        totals: totalMaterials_(materials),
-        _header: header,
-        _lines: materialRows
-      };
-    })
-    .filter(card => {
-      if (filterFmr && !normalizeUpper_(card.fmrNumber).includes(filterFmr)) return false;
-      if (filterIwp && !normalizeUpper_(card.iwpNumber).includes(filterIwp)) return false;
-      if (filterStatus && normalizeUpper_(card.status) !== filterStatus) return false;
-      if (filterIsoLine || filterIsoSheet || filterCommodity) {
-        const matched = card._lines.some(line => {
-          if (filterIsoLine && normalizeUpper_(line.ISO_Line_Number) !== filterIsoLine) {
-            return false;
-          }
-          if (filterIsoSheet && normalizeUpper_(line.ISO_Sheet) !== filterIsoSheet) {
-            return false;
-          }
-          if (
-            filterCommodity &&
-            !normalizeUpper_(line.Commodity_Code).includes(filterCommodity)
-          ) {
-            return false;
-          }
-          return true;
-        });
-        if (!matched) return false;
+function uniqueEligibleTags_(bagData) {
+  const byId = {};
+  bagData
+    .filter(item => normalize_(item.status) === 'Active')
+    .forEach(item => {
+      if (!byId[item.bagTagId]) {
+        byId[item.bagTagId] = {
+          bagTagId: item.bagTagId,
+          tagNumber: item.tagNumber,
+          storageLocation: item.storageLocation
+        };
       }
-      return true;
-    })
-    .sort((a, b) =>
-      a.fmrNumber.localeCompare(b.fmrNumber, undefined, {
-        numeric: true,
-        sensitivity: 'base'
-      })
-    );
+    });
+  return Object.values(byId);
+}
 
-  const truncated = fmrs.length > 200;
-  fmrs = fmrs.slice(0, 200).map(card => {
-    const clone = {...card};
-    delete clone._header;
-    delete clone._lines;
-    return clone;
+function getActiveBagDataByLine_() {
+  const headers = getSheetData_(FMR_CORE.SHEETS.BAG_HEADERS).rows
+    .filter(row => ['Active', 'Partially Issued'].includes(normalize_(row.Status)));
+  const headersById = Object.fromEntries(
+    headers.map(row => [normalize_(row.Bag_Tag_ID), row])
+  );
+
+  const result = {};
+  getSheetData_(FMR_CORE.SHEETS.BAG_ITEMS).rows.forEach(item => {
+    const header = headersById[normalize_(item.Bag_Tag_ID)];
+    const remaining = number_(item.Qty_Remaining_In_Bag);
+    if (!header || remaining <= 0) return;
+
+    const lineId = normalize_(item.FMR_Line_ID);
+    if (!result[lineId]) result[lineId] = [];
+    result[lineId].push({
+      bagTagItemId: normalize_(item.Bag_Tag_Item_ID),
+      bagTagId: normalize_(item.Bag_Tag_ID),
+      tagNumber: normalize_(item.Tag_Number || header.Tag_Number),
+      storageLocation: normalize_(header.Storage_Location),
+      qtyRemaining: remaining,
+      uom: normalize_(item.UOM),
+      status: normalize_(header.Status)
+    });
   });
 
-  const pendingBackorders = getPendingBackorderQueue_();
-  const activeBagTags = getActiveBagTagQueue_();
-
-  const openStatuses = new Set([
-    'APPROVED',
-    'SOURCING',
-    'PARTIALLY LOCATED',
-    'LOCATED',
-    'PARTIALLY ISSUED',
-    'SUBMITTED',
-    'UNDER REVIEW',
-    'ON HOLD'
-  ]);
-
-  const summarySource = headers;
-  const summary = {
-    totalFmrs: summarySource.length,
-    openFmrs: summarySource.filter(row =>
-      openStatuses.has(normalizeUpper_(row.Current_Status))
-    ).length,
-    pendingBackorders: pendingBackorders.length,
-    activeTags: activeBagTags.length,
-    qtyRequested: sumField_(summarySource, 'Qty_Requested'),
-    qtyLocated: sumField_(summarySource, 'Qty_Confirmed_Located'),
-    qtyAvailable: sumField_(summarySource, 'Qty_Available'),
-    qtyBagged: sumField_(summarySource, 'Qty_Active_Bagged'),
-    qtyIssued: sumField_(summarySource, 'Qty_Issued'),
-    qtyConfirmedBackorder: sumField_(summarySource, 'Qty_Confirmed_Backorder')
-  };
-
-  return {
-    summary,
-    filters: {
-      statuses: allStatuses,
-      iwps: allIwps
-    },
-    fmrs,
-    pendingBackorders,
-    activeBagTags,
-    user: {
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      canReviewBackorders: user.canReviewBackorders
-    },
-    generatedAt: formatTimestamp_(now_()),
-    resultCount: truncated ? 200 : fmrs.length,
-    truncated
-  };
+  Object.values(result).forEach(items => items.sort((a, b) =>
+    a.tagNumber.localeCompare(b.tagNumber, undefined, {numeric: true})
+  ));
+  return result;
 }
 
 function performFieldAction_(userEmail, request) {
@@ -230,455 +129,518 @@ function performFieldAction_(userEmail, request) {
 
   try {
     clearAllCaches_();
-
-    const user = getAuthorizedUser_(userEmail, [
-      FMR_CORE.ROLES.ADMIN,
-      FMR_CORE.ROLES.PLANNER,
-      FMR_CORE.ROLES.MATERIAL_CONTROL,
-      FMR_CORE.ROLES.FIELD_HANDLER
-    ], 'FIELD');
-
-    if (!user.canTransact) {
-      throw new Error(
-        'Read-only access. A Material Control or Field Material Handler role is required to submit actions.'
-      );
-    }
-
-    const source = request || {};
-    const action = normalizeUpper_(source.action);
-    const fmrLineId = normalize_(source.fmrLineId);
-    const quantity = number_(source.quantity);
-
-    if (!fmrLineId) throw new Error('FMR line ID is required.');
-    if (quantity <= 0) throw new Error('Quantity must be greater than zero.');
-
-    const line = findRecord_(FMR_CORE.SHEETS.LINES, 'FMR_Line_ID', fmrLineId);
-    if (!line) throw new Error(`FMR line not found: ${fmrLineId}`);
-
-    const header = findRecord_(FMR_CORE.SHEETS.HEADERS, 'FMR_ID', line.FMR_ID);
-    if (!header) throw new Error(`FMR not found: ${line.FMR_ID}`);
-
-    const selectedUser = resolveSelectedUser_(source.selectedUserId);
-    const notes = normalize_(source.notes);
-    const storageLocation = normalize_(source.storageLocation);
-    const issuedToName = normalize_(source.issuedToName);
-    const correlationId = uuid_('CORR');
-    const timestamp = now_();
-    const limits = actionLimitsForLine_(line);
-
-    let message = '';
-    let transactionType = action;
-    let bagTagId = normalize_(source.bagTagId);
-    let bagTagItemId = normalize_(source.bagTagItemId);
-    let backorderRequestId = '';
-
-    if (action === 'CONFIRM_AVAILABLE') {
-      if (quantity > limits.confirmAvailable) {
-        throw new Error(`Quantity exceeds remaining unlocated amount (${limits.confirmAvailable}).`);
-      }
-      if (!user.canBag && !user.canIssue) {
-        throw new Error('User is not authorized to confirm available material.');
-      }
-      message = `Confirmed ${quantity} available for ${normalize_(line.Commodity_Code)}.`;
-    } else if (action === 'BAG') {
-      if (quantity > limits.bag) {
-        throw new Error(`Quantity exceeds available amount (${limits.bag}).`);
-      }
-      if (!user.canBag) throw new Error('User is not authorized to bag material.');
-      const tagResult = upsertBagTagForLine_(line, header, {
-        bagTagId,
-        quantity,
-        storageLocation,
-        selectedUser,
-        timestamp,
-        notes
-      });
-      bagTagId = tagResult.bagTagId;
-      bagTagItemId = tagResult.bagTagItemId;
-      message = `Bagged ${quantity} under tag ${tagResult.tagNumber}.`;
-    } else if (action === 'DIRECT_ISSUE') {
-      if (quantity > limits.directIssue) {
-        throw new Error(`Quantity exceeds remaining unlocated amount (${limits.directIssue}).`);
-      }
-      if (!user.canIssue) throw new Error('User is not authorized to issue material.');
-      if (!issuedToName) throw new Error('Issued To is required.');
-      message = `Located and issued ${quantity} of ${normalize_(line.Commodity_Code)} to ${issuedToName}.`;
-    } else if (action === 'ISSUE_FROM_AVAILABLE') {
-      if (quantity > limits.issueAvailable) {
-        throw new Error(`Quantity exceeds available amount (${limits.issueAvailable}).`);
-      }
-      if (!user.canIssue) throw new Error('User is not authorized to issue material.');
-      if (!issuedToName) throw new Error('Issued To is required.');
-      message = `Issued ${quantity} available material to ${issuedToName}.`;
-    } else if (action === 'ISSUE_FROM_BAG') {
-      if (!user.canIssue) throw new Error('User is not authorized to issue material.');
-      if (!issuedToName) throw new Error('Issued To is required.');
-      if (!bagTagItemId) throw new Error('A bag / tag item is required.');
-
-      const bagItem = findRecord_(
-        FMR_CORE.SHEETS.BAG_TAG_ITEMS,
-        'Bag_Tag_Item_ID',
-        bagTagItemId
-      );
-      if (!bagItem) throw new Error(`Bag tag item not found: ${bagTagItemId}`);
-      if (normalize_(bagItem.FMR_Line_ID) !== fmrLineId) {
-        throw new Error('Selected bag item does not belong to this material line.');
-      }
-
-      const remaining = number_(bagItem.Qty_Remaining_In_Bag);
-      if (quantity > remaining) {
-        throw new Error(`Quantity exceeds remaining bag quantity (${remaining}).`);
-      }
-
-      updateRecord_(FMR_CORE.SHEETS.BAG_TAG_ITEMS, 'Bag_Tag_Item_ID', bagTagItemId, {
-        Qty_Remaining_In_Bag: roundQty_(remaining - quantity),
-        Status: remaining - quantity <= 0 ? 'DEPLETED' : 'ACTIVE',
-        Updated_At: timestamp
-      });
-
-      bagTagId = normalize_(bagItem.Bag_Tag_ID);
-      message = `Issued ${quantity} from bag to ${issuedToName}.`;
-    } else if (action === 'BACKORDER_REQUESTED') {
-      if (quantity > limits.backorder) {
-        throw new Error(`Quantity exceeds remaining unlocated amount (${limits.backorder}).`);
-      }
-      if (!user.canRequestBackorder) {
-        throw new Error('User is not authorized to request backorders.');
-      }
-
-      const reason = normalize_(source.reason);
-      if (!reason) throw new Error('Backorder reason is required.');
-
-      const requestId = uuid_('BO');
-      backorderRequestId = requestId;
-      appendRecord_(FMR_CORE.SHEETS.BACKORDERS, {
-        Backorder_Request_ID: requestId,
-        FMR_ID: line.FMR_ID,
-        FMR_Number: line.FMR_Number || header.FMR_Number,
-        FMR_Line_ID: fmrLineId,
-        IWP_Number: line.IWP_Number || header.IWP_Number,
-        ISO_Line_Number: line.ISO_Line_Number,
-        ISO_Sheet: line.ISO_Sheet,
-        Commodity_Code: line.Commodity_Code,
-        Qty_Requested_Backorder: quantity,
-        Qty_Confirmed_Backorder: 0,
-        Status: 'Pending Planning Confirmation',
-        Reason: reason,
-        Expected_Date: normalize_(source.expectedDate),
-        Reported_By_Name: selectedUser.name,
-        Reported_By_Email: selectedUser.email,
-        Reported_At: timestamp,
-        Field_Notes: notes,
-        Authenticated_Email: user.email
-      });
-
-      message = `Submitted backorder request ${requestId} for ${quantity}.`;
-    } else {
-      throw new Error(`Unsupported field action: ${action}`);
-    }
-
-    const transactionId = uuid_('TXN');
-    appendRecord_(FMR_CORE.SHEETS.TRANSACTIONS, {
-      Transaction_ID: transactionId,
-      Correlation_ID: correlationId,
-      FMR_ID: line.FMR_ID,
-      FMR_Number: line.FMR_Number || header.FMR_Number,
-      FMR_Line_ID: fmrLineId,
-      Transaction_Type: transactionType,
-      Quantity: quantity,
-      UOM: line.UOM,
-      Authenticated_Email: user.email,
-      Performed_By_Name: selectedUser.name,
-      Performed_By_Email: selectedUser.email,
-      Issued_To_Name: issuedToName,
-      Storage_Location: storageLocation,
-      Bag_Tag_ID: bagTagId,
-      Bag_Tag_Item_ID: bagTagItemId,
-      Backorder_Request_ID: backorderRequestId,
-      Timestamp: timestamp,
-      Notes: notes
-    });
-
-    SpreadsheetApp.flush();
-    clearAllCaches_();
-
-    const refreshedLine = refreshLineSummary_(fmrLineId);
-    clearAllCaches_();
-    refreshFmrHeaderSummary_(line.FMR_ID);
-
-    writeAudit_(
-      'FMR_LINE',
-      fmrLineId,
-      action,
-      user,
-      correlationId,
-      {
-        transactionId,
-        quantity,
-        selectedUserId: selectedUser.userId,
-        storageLocation,
-        issuedToName,
-        bagTagId,
-        bagTagItemId,
-        lineStatus: refreshedLine.Line_Status
-      }
+    const user = getAuthorizedUser_(
+      userEmail,
+      fieldTransactionRoles_(),
+      'FIELD'
     );
 
-    return {
-      success: true,
-      message,
-      transactionId,
-      correlationId,
-      line: serializeMaterialLine_(refreshedLine)
-    };
+    const action = normalizeUpper_(request.action);
+    switch (action) {
+      case FMR_CORE.ACTIONS.CONFIRM_AVAILABLE:
+        return confirmAvailable_(user, request);
+      case FMR_CORE.ACTIONS.BAG:
+        return bagMaterial_(user, request);
+      case FMR_CORE.ACTIONS.DIRECT_ISSUE:
+        return directIssue_(user, request);
+      case FMR_CORE.ACTIONS.ISSUE_FROM_AVAILABLE:
+        return issueAvailable_(user, request);
+      case FMR_CORE.ACTIONS.ISSUE_FROM_BAG:
+        return issueFromBag_(user, request);
+      case FMR_CORE.ACTIONS.BACKORDER_REQUESTED:
+        return submitBackorder_(user, request);
+      default:
+        throw new Error(`Unsupported field action: ${action}`);
+    }
   } finally {
-    clearAllCaches_();
     lock.releaseLock();
   }
 }
 
-function serializeHeader_(header) {
-  const row = header || {};
-  return {
-    fmrId: normalize_(row.FMR_ID),
-    fmrNumber: normalize_(row.FMR_Number),
-    iwpNumber: normalize_(row.IWP_Number),
-    status: normalize_(row.Current_Status),
-    priority: normalize_(row.Priority),
-    requestedBy: normalize_(row.Requested_By),
-    qtyRequested: number_(row.Qty_Requested),
-    qtyConfirmedLocated: number_(row.Qty_Confirmed_Located),
-    qtyActiveBagged: number_(row.Qty_Active_Bagged),
-    qtyAvailable: number_(row.Qty_Available),
-    qtyIssued: number_(row.Qty_Issued),
-    qtyPendingBackorder: number_(row.Qty_Pending_Backorder),
-    qtyConfirmedBackorder: number_(row.Qty_Confirmed_Backorder)
-  };
+function getFieldLine_(request) {
+  const lineId = normalize_(request.fmrLineId);
+  if (!lineId) throw new Error('FMR line ID is required.');
+  const line = findRecord_(FMR_CORE.SHEETS.LINES, 'FMR_Line_ID', lineId);
+  if (!line) throw new Error(`FMR line not found: ${lineId}`);
+  return line;
 }
 
-function serializeMaterialLine_(line) {
-  const row = line || {};
-  const activeBags = getActiveBagsForLine_(row);
-  const eligibleExistingTags = getEligibleTagsForLine_(row);
-
-  return {
-    fmrLineId: normalize_(row.FMR_Line_ID),
-    fmrId: normalize_(row.FMR_ID),
-    fmrNumber: normalize_(row.FMR_Number),
-    commodityCode: normalize_(row.Commodity_Code),
-    size: normalize_(row.Size),
-    description: normalize_(row.Material_Description),
-    uom: normalize_(row.UOM),
-    qtyRequested: number_(row.Qty_Requested),
-    qtyConfirmedLocated: number_(row.Qty_Confirmed_Located),
-    qtyActiveBagged: number_(row.Qty_Active_Bagged),
-    qtyAvailable: number_(row.Qty_Available),
-    qtyIssued: number_(row.Qty_Issued),
-    qtyPendingBackorder: number_(row.Qty_Pending_Backorder),
-    qtyConfirmedBackorder: number_(row.Qty_Confirmed_Backorder),
-    lineStatus: normalize_(row.Line_Status),
-    isoLineNumber: normalize_(row.ISO_Line_Number),
-    isoSheet: normalize_(row.ISO_Sheet),
-    storageLocation: normalize_(row.Storage_Location),
-    actionLimits: actionLimitsForLine_(row),
-    activeBags,
-    eligibleExistingTags
-  };
+function appendMaterialTransaction_(line, transactionType, quantity, user, details) {
+  const data = details || {};
+  const transactionId = uuid_('TXN');
+  appendRecord_(FMR_CORE.SHEETS.TRANSACTIONS, {
+    Transaction_ID: transactionId,
+    Correlation_ID: data.correlationId || '',
+    FMR_ID: line.FMR_ID,
+    FMR_Number: line.FMR_Number,
+    FMR_Line_ID: line.FMR_Line_ID,
+    Transaction_Type: transactionType,
+    Quantity: quantity,
+    UOM: line.UOM,
+    Authenticated_Email: user.email,
+    Performed_By_Name: data.performedByName || user.name,
+    Issued_To_Name: data.issuedToName || '',
+    Source_Bag_Tag_ID: data.sourceBagTagId || '',
+    Target_Bag_Tag_ID: data.targetBagTagId || '',
+    Storage_Location: data.storageLocation || '',
+    Backorder_Request_ID: data.backorderRequestId || '',
+    Timestamp: now_(),
+    Notes: data.notes || ''
+  });
+  return transactionId;
 }
 
-function getActiveBagsForLine_(line) {
-  const lineId = normalize_(line.FMR_Line_ID);
-  const tagsById = Object.fromEntries(
-    getSheetData_(FMR_CORE.SHEETS.BAG_TAGS).rows.map(tag => [
-      normalize_(tag.Bag_Tag_ID),
-      tag
-    ])
+function finishFieldAction_(line, user, action, correlationId, details) {
+  const refreshedLine = refreshLineSummary_(line.FMR_Line_ID);
+  const refreshedHeader = refreshFmrHeaderSummary_(line.FMR_ID);
+
+  writeAudit_(
+    'FMR_LINE',
+    line.FMR_Line_ID,
+    action,
+    user,
+    correlationId,
+    details
   );
 
-  return getSheetData_(FMR_CORE.SHEETS.BAG_TAG_ITEMS).rows
-    .filter(item =>
-      normalize_(item.FMR_Line_ID) === lineId &&
-      number_(item.Qty_Remaining_In_Bag) > 0 &&
-      normalizeUpper_(item.Status || 'ACTIVE') === 'ACTIVE'
-    )
-    .map(item => {
-      const tag = tagsById[normalize_(item.Bag_Tag_ID)] || {};
-      return {
-        bagTagItemId: normalize_(item.Bag_Tag_Item_ID),
-        bagTagId: normalize_(item.Bag_Tag_ID),
-        tagNumber: normalize_(tag.Tag_Number || item.Tag_Number),
-        qtyRemaining: number_(item.Qty_Remaining_In_Bag),
-        uom: normalize_(item.UOM || line.UOM),
-        storageLocation: normalize_(tag.Storage_Location || item.Storage_Location)
-      };
-    });
+  return {
+    success: true,
+    action,
+    correlationId,
+    message: details.message || `${action} completed.`,
+    line: serializeMaterialLine_(refreshedLine),
+    fmrStatus: normalize_(refreshedHeader.Current_Status)
+  };
 }
 
-function getEligibleTagsForLine_(line) {
-  const fmrId = normalize_(line.FMR_ID);
-  const isoLine = normalizeUpper_(line.ISO_Line_Number);
-  const isoSheet = normalizeUpper_(line.ISO_Sheet);
+function confirmAvailable_(user, request) {
+  const line = getFieldLine_(request);
+  const quantity = positiveNumber_(request.quantity, 'Confirmed quantity');
+  const handler = getSelectedWorker_(request.selectedUserId, 'Can_Bag', 'Handled By');
+  const state = getLineOperationalState_(line);
 
-  return getSheetData_(FMR_CORE.SHEETS.BAG_TAGS).rows
-    .filter(tag =>
-      normalize_(tag.FMR_ID) === fmrId &&
-      normalizeUpper_(tag.ISO_Line_Number) === isoLine &&
-      normalizeUpper_(tag.ISO_Sheet) === isoSheet &&
-      normalizeUpper_(tag.Status || 'ACTIVE') === 'ACTIVE'
-    )
-    .map(tag => ({
-      bagTagId: normalize_(tag.Bag_Tag_ID),
-      tagNumber: normalize_(tag.Tag_Number),
-      storageLocation: normalize_(tag.Storage_Location)
-    }));
+  if (quantity > state.notYetLocated) {
+    throw new Error(`Only ${state.notYetLocated} can be newly confirmed for this item.`);
+  }
+
+  const correlationId = uuid_('CORR');
+  appendMaterialTransaction_(
+    line,
+    'CONFIRM_AVAILABLE',
+    quantity,
+    user,
+    {
+      correlationId,
+      performedByName: handler.name,
+      storageLocation: normalize_(request.storageLocation),
+      notes: normalize_(request.notes)
+    }
+  );
+
+  if (normalize_(request.storageLocation)) {
+    updateRecord_(
+      FMR_CORE.SHEETS.LINES,
+      'FMR_Line_ID',
+      line.FMR_Line_ID,
+      {Storage_Location: normalize_(request.storageLocation)}
+    );
+  }
+
+  return finishFieldAction_(
+    line,
+    user,
+    'CONFIRM_AVAILABLE',
+    correlationId,
+    {
+      quantity,
+      handledBy: handler.name,
+      message: `${quantity} ${normalize_(line.UOM)} confirmed available.`
+    }
+  );
 }
 
-function upsertBagTagForLine_(line, header, options) {
-  const source = options || {};
-  let bagTagId = normalize_(source.bagTagId);
+function nextTagNumber_() {
+  const config = getConfiguration_();
+  const prefix = normalize_(config.TAG_PREFIX) || 'BT';
+  const year = normalize_(config.CURRENT_YEAR) || String(now_().getFullYear());
+  const digits = Math.max(1, number_(config.TAG_DIGITS) || 5);
+  const sequence = Math.max(1, number_(config.NEXT_TAG_SEQUENCE) || 1);
+  const tagNumber = `${prefix}-${year}-${String(sequence).padStart(digits, '0')}`;
+  setConfigurationValue_('NEXT_TAG_SEQUENCE', sequence + 1);
+  return tagNumber;
+}
+
+function bagMaterial_(user, request) {
+  const line = getFieldLine_(request);
+  const quantity = positiveNumber_(request.quantity, 'Bag quantity');
+  const handler = getSelectedWorker_(request.selectedUserId, 'Can_Bag', 'Bagged By');
+  const state = getLineOperationalState_(line);
+  const maximum = state.available + state.notYetLocated;
+
+  if (quantity > maximum) {
+    throw new Error(`Only ${maximum} can be bagged for this item.`);
+  }
+
+  const correlationId = uuid_('CORR');
+  const newlyLocated = Math.max(0, quantity - state.available);
+  if (newlyLocated > 0) {
+    appendMaterialTransaction_(
+      line,
+      'CONFIRM_AVAILABLE',
+      newlyLocated,
+      user,
+      {
+        correlationId,
+        performedByName: handler.name,
+        storageLocation: normalize_(request.storageLocation),
+        notes: `Located during Bag & Tag. ${normalize_(request.notes)}`
+      }
+    );
+  }
+
+  let bagHeader = null;
+  let bagTagId = normalize_(request.bagTagId);
   let tagNumber = '';
-  let storageLocation = normalize_(source.storageLocation);
+  let storageLocation = normalize_(request.storageLocation);
 
   if (bagTagId) {
-    const existing = findRecord_(FMR_CORE.SHEETS.BAG_TAGS, 'Bag_Tag_ID', bagTagId);
-    if (!existing) throw new Error(`Bag tag not found: ${bagTagId}`);
-    if (normalize_(existing.FMR_ID) !== normalize_(line.FMR_ID)) {
-      throw new Error('Existing tag belongs to a different FMR.');
+    bagHeader = findRecord_(FMR_CORE.SHEETS.BAG_HEADERS, 'Bag_Tag_ID', bagTagId);
+    if (!bagHeader) throw new Error(`Bag tag not found: ${bagTagId}`);
+    if (normalize_(bagHeader.Status) !== 'Active') {
+      throw new Error('Only an active tag can receive additional material.');
     }
     if (
-      normalizeUpper_(existing.ISO_Line_Number) !== normalizeUpper_(line.ISO_Line_Number) ||
-      normalizeUpper_(existing.ISO_Sheet) !== normalizeUpper_(line.ISO_Sheet)
+      normalize_(bagHeader.FMR_ID) !== normalize_(line.FMR_ID) ||
+      normalizeUpper_(bagHeader.ISO_Line_Number) !== normalizeUpper_(line.ISO_Line_Number) ||
+      normalizeUpper_(bagHeader.ISO_Sheet) !== normalizeUpper_(line.ISO_Sheet)
     ) {
-      throw new Error('Existing tag is limited to a different ISO line/sheet.');
+      throw new Error('The selected tag belongs to a different FMR, ISO line, or sheet.');
     }
-    tagNumber = normalize_(existing.Tag_Number);
-    storageLocation = storageLocation || normalize_(existing.Storage_Location);
+    tagNumber = normalize_(bagHeader.Tag_Number);
+    storageLocation = normalize_(bagHeader.Storage_Location);
   } else {
-    bagTagId = uuid_('TAG');
-    tagNumber = buildTagNumber_(line, header);
-    if (!storageLocation) {
-      throw new Error('Storage location is required when creating a new tag.');
-    }
-
-    appendRecord_(FMR_CORE.SHEETS.BAG_TAGS, {
+    if (!storageLocation) throw new Error('Storage location is required for a new tag.');
+    bagTagId = uuid_('BAG');
+    tagNumber = nextTagNumber_();
+    appendRecord_(FMR_CORE.SHEETS.BAG_HEADERS, {
       Bag_Tag_ID: bagTagId,
       Tag_Number: tagNumber,
       FMR_ID: line.FMR_ID,
-      FMR_Number: line.FMR_Number || header.FMR_Number,
-      IWP_Number: line.IWP_Number || header.IWP_Number,
+      FMR_Number: line.FMR_Number,
+      IWP_ID: line.IWP_ID,
+      IWP_Number: line.IWP_Number,
+      ISO_ID: line.ISO_ID,
       ISO_Line_Number: line.ISO_Line_Number,
       ISO_Sheet: line.ISO_Sheet,
       Storage_Location: storageLocation,
-      Status: 'ACTIVE',
-      Bagged_By_Name: source.selectedUser.name,
-      Bagged_By_Email: source.selectedUser.email,
-      Bagged_At: source.timestamp,
-      Created_At: source.timestamp,
-      Updated_At: source.timestamp,
-      Notes: source.notes || ''
+      Bagged_By_Name: handler.name,
+      Authenticated_Email: user.email,
+      Bagged_At: now_(),
+      Status: 'Active',
+      Notes: normalize_(request.notes)
     });
   }
 
-  const bagTagItemId = uuid_('TAGITEM');
-  appendRecord_(FMR_CORE.SHEETS.BAG_TAG_ITEMS, {
-    Bag_Tag_Item_ID: bagTagItemId,
-    Bag_Tag_ID: bagTagId,
-    Tag_Number: tagNumber,
+  const existingItem = getSheetData_(FMR_CORE.SHEETS.BAG_ITEMS).rows.find(item =>
+    normalize_(item.Bag_Tag_ID) === bagTagId &&
+    normalize_(item.FMR_Line_ID) === normalize_(line.FMR_Line_ID)
+  );
+
+  if (existingItem) {
+    updateRecord_(
+      FMR_CORE.SHEETS.BAG_ITEMS,
+      'Bag_Tag_Item_ID',
+      existingItem.Bag_Tag_Item_ID,
+      {
+        Qty_Bagged: number_(existingItem.Qty_Bagged) + quantity,
+        Qty_Remaining_In_Bag: number_(existingItem.Qty_Remaining_In_Bag) + quantity,
+        Updated_At: now_()
+      }
+    );
+  } else {
+    appendRecord_(FMR_CORE.SHEETS.BAG_ITEMS, {
+      Bag_Tag_Item_ID: uuid_('BAGITEM'),
+      Bag_Tag_ID: bagTagId,
+      Tag_Number: tagNumber,
+      FMR_Line_ID: line.FMR_Line_ID,
+      Commodity_Code: line.Commodity_Code,
+      Size: line.Size,
+      Material_Description: line.Material_Description,
+      Qty_Bagged: quantity,
+      Qty_Issued_From_Bag: 0,
+      Qty_Remaining_In_Bag: quantity,
+      UOM: line.UOM,
+      Created_At: now_(),
+      Updated_At: now_()
+    });
+  }
+
+  appendMaterialTransaction_(
+    line,
+    'BAG',
+    quantity,
+    user,
+    {
+      correlationId,
+      performedByName: handler.name,
+      targetBagTagId: bagTagId,
+      storageLocation,
+      notes: normalize_(request.notes)
+    }
+  );
+
+  return finishFieldAction_(
+    line,
+    user,
+    'BAG',
+    correlationId,
+    {
+      quantity,
+      newlyLocated,
+      bagTagId,
+      tagNumber,
+      storageLocation,
+      baggedBy: handler.name,
+      message: `${quantity} ${normalize_(line.UOM)} reserved under ${tagNumber}.`
+    }
+  );
+}
+
+function requireIssueData_(request) {
+  const issuedTo = normalize_(request.issuedToName);
+  if (!issuedTo) throw new Error('Issued To is required.');
+  const handler = getSelectedWorker_(request.selectedUserId, 'Can_Issue', 'Issued By');
+  return {issuedTo, handler};
+}
+
+function directIssue_(user, request) {
+  const line = getFieldLine_(request);
+  const quantity = positiveNumber_(request.quantity, 'Issue quantity');
+  const issue = requireIssueData_(request);
+  const state = getLineOperationalState_(line);
+
+  if (quantity > state.notYetLocated) {
+    throw new Error(`Only ${state.notYetLocated} can be located and issued directly.`);
+  }
+
+  const correlationId = uuid_('CORR');
+  appendMaterialTransaction_(
+    line,
+    'DIRECT_ISSUE',
+    quantity,
+    user,
+    {
+      correlationId,
+      performedByName: issue.handler.name,
+      issuedToName: issue.issuedTo,
+      storageLocation: normalize_(request.storageLocation),
+      notes: normalize_(request.notes)
+    }
+  );
+
+  return finishFieldAction_(
+    line,
+    user,
+    'DIRECT_ISSUE',
+    correlationId,
+    {
+      quantity,
+      issuedTo: issue.issuedTo,
+      issuedBy: issue.handler.name,
+      message: `${quantity} ${normalize_(line.UOM)} located and issued to ${issue.issuedTo}.`
+    }
+  );
+}
+
+function issueAvailable_(user, request) {
+  const line = getFieldLine_(request);
+  const quantity = positiveNumber_(request.quantity, 'Issue quantity');
+  const issue = requireIssueData_(request);
+  const state = getLineOperationalState_(line);
+
+  if (quantity > state.available) {
+    throw new Error(`Only ${state.available} is currently available to issue.`);
+  }
+
+  const correlationId = uuid_('CORR');
+  appendMaterialTransaction_(
+    line,
+    'ISSUE_FROM_AVAILABLE',
+    quantity,
+    user,
+    {
+      correlationId,
+      performedByName: issue.handler.name,
+      issuedToName: issue.issuedTo,
+      notes: normalize_(request.notes)
+    }
+  );
+
+  return finishFieldAction_(
+    line,
+    user,
+    'ISSUE_FROM_AVAILABLE',
+    correlationId,
+    {
+      quantity,
+      issuedTo: issue.issuedTo,
+      issuedBy: issue.handler.name,
+      message: `${quantity} ${normalize_(line.UOM)} issued to ${issue.issuedTo}.`
+    }
+  );
+}
+
+function issueFromBag_(user, request) {
+  const line = getFieldLine_(request);
+  const quantity = positiveNumber_(request.quantity, 'Issue quantity');
+  const issue = requireIssueData_(request);
+  const bagItemId = normalize_(request.bagTagItemId);
+  if (!bagItemId) throw new Error('A bag/tag item must be selected.');
+
+  const bagItem = findRecord_(FMR_CORE.SHEETS.BAG_ITEMS, 'Bag_Tag_Item_ID', bagItemId);
+  if (!bagItem) throw new Error(`Bag/tag item not found: ${bagItemId}`);
+  if (normalize_(bagItem.FMR_Line_ID) !== normalize_(line.FMR_Line_ID)) {
+    throw new Error('The selected bag item belongs to a different FMR material line.');
+  }
+
+  const bagHeader = findRecord_(
+    FMR_CORE.SHEETS.BAG_HEADERS,
+    'Bag_Tag_ID',
+    bagItem.Bag_Tag_ID
+  );
+  if (!bagHeader || !['Active', 'Partially Issued'].includes(normalize_(bagHeader.Status))) {
+    throw new Error('The selected bag/tag is not active.');
+  }
+
+  const remaining = number_(bagItem.Qty_Remaining_In_Bag);
+  if (quantity > remaining) {
+    throw new Error(`Only ${remaining} remains under tag ${bagHeader.Tag_Number}.`);
+  }
+
+  const correlationId = uuid_('CORR');
+  appendMaterialTransaction_(
+    line,
+    'ISSUE_FROM_BAG',
+    quantity,
+    user,
+    {
+      correlationId,
+      performedByName: issue.handler.name,
+      issuedToName: issue.issuedTo,
+      sourceBagTagId: bagHeader.Bag_Tag_ID,
+      storageLocation: bagHeader.Storage_Location,
+      notes: normalize_(request.notes)
+    }
+  );
+
+  updateRecord_(
+    FMR_CORE.SHEETS.BAG_ITEMS,
+    'Bag_Tag_Item_ID',
+    bagItemId,
+    {
+      Qty_Issued_From_Bag: number_(bagItem.Qty_Issued_From_Bag) + quantity,
+      Qty_Remaining_In_Bag: remaining - quantity,
+      Updated_At: now_()
+    }
+  );
+
+  clearAllCaches_();
+  const allItems = findRecords_(
+    FMR_CORE.SHEETS.BAG_ITEMS,
+    'Bag_Tag_ID',
+    bagHeader.Bag_Tag_ID
+  );
+  const allIssued = allItems.every(item => number_(item.Qty_Remaining_In_Bag) <= 0);
+  const anyIssued = allItems.some(item => number_(item.Qty_Issued_From_Bag) > 0);
+
+  updateRecord_(
+    FMR_CORE.SHEETS.BAG_HEADERS,
+    'Bag_Tag_ID',
+    bagHeader.Bag_Tag_ID,
+    {
+      Status: allIssued ? 'Issued' : (anyIssued ? 'Partially Issued' : 'Active')
+    }
+  );
+
+  return finishFieldAction_(
+    line,
+    user,
+    'ISSUE_FROM_BAG',
+    correlationId,
+    {
+      quantity,
+      bagTagId: normalize_(bagHeader.Bag_Tag_ID),
+      tagNumber: normalize_(bagHeader.Tag_Number),
+      issuedTo: issue.issuedTo,
+      issuedBy: issue.handler.name,
+      message: `${quantity} ${normalize_(line.UOM)} issued from ${bagHeader.Tag_Number} to ${issue.issuedTo}.`
+    }
+  );
+}
+
+function submitBackorder_(user, request) {
+  const line = getFieldLine_(request);
+  const quantity = positiveNumber_(request.quantity, 'Backorder quantity');
+  const reporter = getSelectedWorker_(
+    request.selectedUserId,
+    'Can_Request_Backorder',
+    'Reported By'
+  );
+  const state = getLineOperationalState_(line);
+
+  if (quantity > state.maximumNewBackorder) {
+    throw new Error(`Only ${state.maximumNewBackorder} can be submitted as a new backorder.`);
+  }
+
+  const reason = normalize_(request.reason);
+  const allowedReasons = getListValues_('Backorder_Reason');
+  if (!reason || !allowedReasons.includes(reason)) {
+    throw new Error('A valid backorder reason is required.');
+  }
+
+  const requestId = uuid_('BACKORDER');
+  const correlationId = uuid_('CORR');
+  appendRecord_(FMR_CORE.SHEETS.BACKORDERS, {
+    Backorder_Request_ID: requestId,
     FMR_ID: line.FMR_ID,
+    FMR_Number: line.FMR_Number,
     FMR_Line_ID: line.FMR_Line_ID,
     Commodity_Code: line.Commodity_Code,
-    Size: line.Size,
-    UOM: line.UOM,
-    Qty_Bagged: source.quantity,
-    Qty_Remaining_In_Bag: source.quantity,
-    Status: 'ACTIVE',
-    Storage_Location: storageLocation,
-    Created_At: source.timestamp,
-    Updated_At: source.timestamp
+    Qty_Requested_Backorder: quantity,
+    Qty_Confirmed_Backorder: 0,
+    Reason: reason,
+    Expected_Date: parseOptionalDate_(request.expectedDate),
+    Field_Notes: normalize_(request.notes),
+    Reported_By_Name: reporter.name,
+    Authenticated_Email: user.email,
+    Reported_At: now_(),
+    Status: 'Pending Planning Confirmation'
   });
 
-  return {bagTagId, bagTagItemId, tagNumber};
-}
-
-function buildTagNumber_(line, header) {
-  const project = normalize_(getConfiguration_().PROJECT_CODE) || 'FMR';
-  const fmr = normalize_(line.FMR_Number || header.FMR_Number).replace(/\s+/g, '');
-  const stamp = Utilities.formatDate(
-    now_(),
-    Session.getScriptTimeZone() || 'America/Chicago',
-    'HHmmss'
-  );
-  return `${project}-${fmr || 'TAG'}-${stamp}`;
-}
-
-function getPendingBackorderQueue_() {
-  return getSheetData_(FMR_CORE.SHEETS.BACKORDERS).rows
-    .filter(row => isActionableBackorderStatus_(row.Status))
-    .map(row => {
-      const requested = number_(row.Qty_Requested_Backorder);
-      const confirmed = number_(row.Qty_Confirmed_Backorder);
-      return {
-        requestId: normalize_(row.Backorder_Request_ID),
-        fmrNumber: normalize_(row.FMR_Number),
-        commodityCode: normalize_(row.Commodity_Code),
-        iwpNumber: normalize_(row.IWP_Number),
-        isoLineNumber: normalize_(row.ISO_Line_Number),
-        isoSheet: normalize_(row.ISO_Sheet),
-        qtyPending: roundQty_(Math.max(0, requested - confirmed)),
-        qtyRequestedBackorder: requested,
-        reason: normalize_(row.Reason),
-        reportedBy: normalize_(row.Reported_By_Name),
-        reportedAt: formatTimestamp_(row.Reported_At),
-        fieldNotes: normalize_(row.Field_Notes)
-      };
-    })
-    .sort((a, b) =>
-      String(a.reportedAt).localeCompare(String(b.reportedAt))
-    );
-}
-
-function getActiveBagTagQueue_() {
-  const itemsByTag = groupBy_(
-    getSheetData_(FMR_CORE.SHEETS.BAG_TAG_ITEMS).rows.filter(item =>
-      number_(item.Qty_Remaining_In_Bag) > 0 &&
-      normalizeUpper_(item.Status || 'ACTIVE') === 'ACTIVE'
-    ),
-    'Bag_Tag_ID'
+  appendMaterialTransaction_(
+    line,
+    'BACKORDER_REQUESTED',
+    quantity,
+    user,
+    {
+      correlationId,
+      performedByName: reporter.name,
+      backorderRequestId: requestId,
+      notes: `${reason}. ${normalize_(request.notes)}`
+    }
   );
 
-  return getSheetData_(FMR_CORE.SHEETS.BAG_TAGS).rows
-    .filter(tag => {
-      const tagId = normalize_(tag.Bag_Tag_ID);
-      return (
-        normalizeUpper_(tag.Status || 'ACTIVE') === 'ACTIVE' &&
-        (itemsByTag[tagId] || []).length > 0
-      );
-    })
-    .map(tag => {
-      const tagId = normalize_(tag.Bag_Tag_ID);
-      return {
-        tagNumber: normalize_(tag.Tag_Number),
-        fmrNumber: normalize_(tag.FMR_Number),
-        iwpNumber: normalize_(tag.IWP_Number),
-        isoLineNumber: normalize_(tag.ISO_Line_Number),
-        isoSheet: normalize_(tag.ISO_Sheet),
-        storageLocation: normalize_(tag.Storage_Location),
-        baggedBy: normalize_(tag.Bagged_By_Name),
-        baggedAt: formatTimestamp_(tag.Bagged_At),
-        items: (itemsByTag[tagId] || []).map(item => ({
-          commodityCode: normalize_(item.Commodity_Code),
-          size: normalize_(item.Size),
-          qtyRemainingInBag: number_(item.Qty_Remaining_In_Bag),
-          uom: normalize_(item.UOM)
-        }))
-      };
-    });
-}
-
-function sumField_(rows, field) {
-  return roundQty_((rows || []).reduce((sum, row) => sum + number_(row[field]), 0));
-}
-
-function normalizeLower_(value) {
-  return normalize_(value).toLowerCase();
+  return finishFieldAction_(
+    line,
+    user,
+    'BACKORDER_REQUESTED',
+    correlationId,
+    {
+      quantity,
+      requestId,
+      reason,
+      reportedBy: reporter.name,
+      message: `${quantity} ${normalize_(line.UOM)} submitted for Planning backorder review.`
+    }
+  );
 }

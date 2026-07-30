@@ -1,132 +1,120 @@
 /**
- * Shared foundation for FMRCore.
- * Owns sheet names, roles, database context, caches, and common helpers.
+ * FMRCore v2.2.0 — contractor-controlled library configuration.
+ * Step 3 adds controlled Field Portal transactions and shared-iPad attribution.
  */
-
 const FMR_CORE = Object.freeze({
-  VERSION: '2.3.0',
-
+  VERSION: '2.2.0-step3-field',
   SHEETS: Object.freeze({
     CONFIG: 'Configuration',
     LISTS: 'Lists',
     USERS: 'Users',
+    IWP: 'IWP_Master',
+    ISO: 'ISO_Master',
     HEADERS: 'FMR_Header',
+    LINKS: 'FMR_ISO_Link',
     LINES: 'FMR_Line_Items',
-    BACKORDERS: 'Backorder_Requests',
     TRANSACTIONS: 'Material_Transactions',
+    BAG_HEADERS: 'Bag_Tag_Header',
+    BAG_ITEMS: 'Bag_Tag_Items',
+    BACKORDERS: 'Backorder_Requests',
     AUDIT: 'Audit_Log',
-    BAG_TAGS: 'Bag_Tags',
-    BAG_TAG_ITEMS: 'Bag_Tag_Items'
+    SEARCH_INDEX: 'Search_Index'
   }),
-
   ROLES: Object.freeze({
-    ADMIN: 'ADMINISTRATOR',
-    PLANNER: 'PLANNER',
-    MATERIAL_CONTROL: 'MATERIAL CONTROL',
-    FIELD_HANDLER: 'FIELD MATERIAL HANDLER',
-    FOREMAN: 'FOREMAN',
-    SUPERINTENDENT: 'SUPERINTENDENT',
-    LEADERSHIP: 'LEADERSHIP',
-    AUDITOR: 'AUDITOR'
+    ADMIN: 'Administrator',
+    PLANNER: 'Planner',
+    MATERIAL_CONTROL: 'Material Control',
+    FIELD_HANDLER: 'Field Material Handler',
+    FOREMAN: 'Foreman',
+    SUPERINTENDENT: 'Superintendent',
+    LEADERSHIP: 'Leadership',
+    AUDITOR: 'Auditor'
   }),
-
-  LIST_FIELDS: Object.freeze({
-    BACKORDER_REASON: 'Backorder_Reason'
-  })
+  ACTIONS: Object.freeze({
+    CONFIRM_AVAILABLE: 'CONFIRM_AVAILABLE',
+    BAG: 'BAG',
+    DIRECT_ISSUE: 'DIRECT_ISSUE',
+    ISSUE_FROM_AVAILABLE: 'ISSUE_FROM_AVAILABLE',
+    ISSUE_FROM_BAG: 'ISSUE_FROM_BAG',
+    BACKORDER_REQUESTED: 'BACKORDER_REQUESTED'
+  }),
+  ADMIN_RESULT_LIMIT: 200
 });
 
-var SHEET_CACHE_ = {};
-var CONFIG_CACHE_ = null;
-var ACTIVE_DATABASE_ID_ = '';
-var ACTIVE_DATABASE_ = null;
+let DATABASE_ID_ = '';
+let SHEET_CACHE_ = {};
+let CONFIG_CACHE_ = null;
 
 function setDatabaseContext_(databaseId) {
-  const id = normalize_(databaseId);
-  if (!id) throw new Error('Database spreadsheet ID is required.');
-
-  if (ACTIVE_DATABASE_ID_ !== id) {
-    ACTIVE_DATABASE_ID_ = id;
-    ACTIVE_DATABASE_ = SpreadsheetApp.openById(id);
-    clearAllCaches_();
-  }
-
-  if (!ACTIVE_DATABASE_) {
-    ACTIVE_DATABASE_ = SpreadsheetApp.openById(id);
+  if (!databaseId) throw new Error('databaseId is required.');
+  const nextId = String(databaseId);
+  if (DATABASE_ID_ !== nextId) {
+    DATABASE_ID_ = nextId;
+    SHEET_CACHE_ = {};
+    CONFIG_CACHE_ = null;
   }
 }
 
 function database_() {
-  if (ACTIVE_DATABASE_) return ACTIVE_DATABASE_;
-  if (ACTIVE_DATABASE_ID_) {
-    ACTIVE_DATABASE_ = SpreadsheetApp.openById(ACTIVE_DATABASE_ID_);
-    return ACTIVE_DATABASE_;
-  }
-  throw new Error('Database context has not been set.');
-}
-
-function normalize_(value) {
-  if (value == null) return '';
-  return String(value).trim();
-}
-
-function normalizeUpper_(value) {
-  return normalize_(value).toUpperCase();
-}
-
-function number_(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const cleaned = normalize_(value).replace(/,/g, '');
-  if (!cleaned) return 0;
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function uuid_(prefix) {
-  const stamp = Utilities.getUuid().replace(/-/g, '').toUpperCase();
-  return `${normalize_(prefix) || 'ID'}_${stamp}`;
+  if (!DATABASE_ID_) throw new Error('Database context has not been initialized.');
+  return SpreadsheetApp.openById(DATABASE_ID_);
 }
 
 function now_() {
   return new Date();
 }
 
-function uniqueSorted_(values) {
-  const seen = {};
-  const result = [];
-  (values || []).forEach(value => {
-    const normalized = normalize_(value);
-    if (!normalized) return;
-    const key = normalizeUpper_(normalized);
-    if (seen[key]) return;
-    seen[key] = true;
-    result.push(normalized);
-  });
-  return result.sort((a, b) =>
-    a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'})
-  );
+function uuid_(prefix) {
+  return `${prefix}-${Utilities.getUuid().toUpperCase()}`;
+}
+
+function normalize_(value) {
+  return String(value == null ? '' : value).trim();
+}
+
+function normalizeUpper_(value) {
+  return normalize_(value).toUpperCase();
 }
 
 function lineSheetKey_(lineNumber, sheetNumber) {
   const line = normalizeUpper_(lineNumber);
   const sheet = normalizeUpper_(sheetNumber);
-  if (!line) throw new Error('ISO line number is required.');
-  if (!sheet) throw new Error('ISO sheet number is required.');
+  if (!line || !sheet) throw new Error('ISO Line Number and ISO Sheet are required.');
   return `${line}|${sheet}`;
 }
 
-function formatTimestamp_(value) {
-  if (!value) return '';
-  const date = value instanceof Date ? value : new Date(value);
-  if (isNaN(date.getTime())) return normalize_(value);
-  return Utilities.formatDate(
-    date,
-    Session.getScriptTimeZone() || 'America/Chicago',
-    'yyyy-MM-dd HH:mm:ss'
-  );
+function number_(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function truthyFlag_(value) {
-  if (value === true || value === 1) return true;
-  const normalized = normalizeUpper_(value);
-  return ['TRUE', 'YES', 'Y', '1', 'ACTIVE'].includes(normalized);
+function positiveNumber_(value, label) {
+  const parsed = number_(value);
+  if (parsed <= 0) throw new Error(`${label || 'Quantity'} must be greater than zero.`);
+  return parsed;
+}
+
+function formatDateTime_(value) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return normalize_(value);
+  const timezone = normalize_(getConfiguration_().TIMEZONE) || Session.getScriptTimeZone();
+  return Utilities.formatDate(date, timezone, 'yyyy-MM-dd HH:mm');
+}
+
+function parseOptionalDate_(value) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(`${value}T12:00:00`);
+  if (Number.isNaN(date.getTime())) throw new Error(`Invalid date: ${value}`);
+  return date;
+}
+
+function uniqueSorted_(values) {
+  return [...new Set(values.map(normalize_).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'}));
+}
+
+function includesNormalized_(value, searchValue) {
+  const search = normalizeUpper_(searchValue);
+  return !search || normalizeUpper_(value).includes(search);
 }
