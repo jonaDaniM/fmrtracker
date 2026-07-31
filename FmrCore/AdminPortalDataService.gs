@@ -1,17 +1,23 @@
 /**
  * AdminPortalDataService.gs
  *
- * FMRCore v2.3.1 targeted Admin portal service.
+ * FMRCore v2.3.1 Admin portal read service.
  *
- * This file intentionally does NOT redefine:
- * - getPortalBootstrap_
- * - serializeMaterialLine_
- * - serializeHeader_
- * - totalMaterials_
+ * Responsibilities:
+ * - Build the Admin Portal dashboard response.
+ * - Search valid canonical FMR headers and material lines.
+ * - Calculate Admin summary metrics.
+ * - Return actionable Planning backorders.
+ * - Return active Bag & Tag records.
  *
- * Those shared functions already exist elsewhere in the current FMRCore
- * project. Add this file only after project-wide search confirms that the
- * private Admin functions below are absent.
+ * Depends on:
+ * - PortalService.gs
+ * - SerializationService.gs
+ * - Repository.gs
+ * - Security.gs
+ * - BackorderService.gs
+ *
+ * This service performs no backorder decision writes.
  */
 
 function getAdminPortalData_(
@@ -63,10 +69,7 @@ function getAdminPortalData_(
       role:
         user.role,
       canReviewBackorders:
-        [
-          FMR_CORE.ROLES.ADMIN,
-          FMR_CORE.ROLES.PLANNER
-        ].includes(
+        canReviewBackorders_(
           user.role
         )
     },

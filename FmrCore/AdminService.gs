@@ -1,11 +1,28 @@
 /**
  * AdminService.gs
  *
- * v2.3.1 organization:
- * - Planning backorder decision logic lives in BackorderService.gs.
- * - Portal bootstrap, Admin dashboard reads, Field reads, serializers, and
- *   Field actions currently remain in FieldService.gs.
+ * Reserved for future Admin write services that do not belong to a more
+ * specific domain service.
  *
- * This file is intentionally comment-only so the Apps Script project contains
- * exactly one global reviewBackorder_() definition.
+ * Current Admin responsibilities:
+ * - Admin dashboard reads and operational queues:
+ *   AdminPortalDataService.gs
+ *
+ * - Planning backorder decisions:
+ *   BackorderService.gs
+ *
+ * - Portal identity and capability bootstrap:
+ *   PortalService.gs
+ *
+ * - Shared header and material serialization:
+ *   SerializationService.gs
+ *
+ * - Field reads and Field material transactions:
+ *   FieldService.gs
+ *
+ * This file is intentionally comment-only.
+ *
+ * Keeping this file free of executable functions ensures that the Apps Script
+ * project contains exactly one global definition of reviewBackorder_() and
+ * avoids duplicating responsibilities already assigned to other services.
  */

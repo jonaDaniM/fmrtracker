@@ -650,12 +650,23 @@ function previewManualFmrApprovals(
         throw new Error('staging_entry_not_found');
       }
 
-      const entry = normalizeManualFmrEntryRow(entryItem.record);
+      const entry =
+        normalizeManualFmrEntryRow(
+          entryItem.record
+        );
+
+      const reviewBatch =
+        context.batchById[
+          normalizeManualFmrText_(
+            review.Batch_ID
+          )
+        ] || {};
 
       assertManualFmrSeparationOfDuties_(
         entry,
         review,
-        reviewer
+        reviewer,
+        reviewBatch
       );
 
       const validation = validateManualFmrReviewApproval_(

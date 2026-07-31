@@ -1,9 +1,19 @@
 /**
- * FMRCore v2.2.0 — contractor-controlled library configuration.
- * Step 3 adds controlled Field Portal transactions and shared-iPad attribution.
+ * FMRCore v2.3.1-rc1
+ *
+ * Release-candidate configuration for the repaired FMRCore service layer.
+ *
+ * Includes:
+ * - Correct physical spreadsheet row tracking;
+ * - State-safe Planning backorder decisions;
+ * - Shared portal bootstrap services;
+ * - Shared header and material serialization;
+ * - Hardened Admin Portal reads and operational queues;
+ * - Centralized Field and backorder capability rules.
  */
 const FMR_CORE = Object.freeze({
-  VERSION: '2.2.0-step3-field',
+  VERSION: '2.3.1-rc1',
+  
   SHEETS: Object.freeze({
     CONFIG: 'Configuration',
     LISTS: 'Lists',

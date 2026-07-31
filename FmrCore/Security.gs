@@ -35,6 +35,36 @@ function canPerformFieldTransactions_(role) {
   return fieldTransactionRoles_().includes(normalize_(role));
 }
 
+// Add share backorder authorization helpers
+
+/**
+ * Returns the roles authorized to review and decide Planning backorders.
+ *
+ * This is the single source of truth for:
+ * - Portal bootstrap permissions;
+ * - Admin Portal action visibility;
+ * - server-side reviewBackorder_ authorization.
+ */
+function backorderReviewRoles_() {
+  return [
+    FMR_CORE.ROLES.ADMIN,
+    FMR_CORE.ROLES.PLANNER,
+    FMR_CORE.ROLES.MATERIAL_CONTROL
+  ];
+}
+
+/**
+ * Returns true when the supplied role may review Planning backorders.
+ *
+ * @param {*} role User role from the Users sheet.
+ * @return {boolean}
+ */
+function canReviewBackorders_(role) {
+  return backorderReviewRoles_().includes(
+    normalize_(role)
+  );
+}
+
 function getSelectableUsers_(capabilityField) {
   return getSheetData_(FMR_CORE.SHEETS.USERS).rows
     .filter(row =>

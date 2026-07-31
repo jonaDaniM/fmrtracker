@@ -191,6 +191,34 @@ function getManualFmrReviewServiceVersion() {
  *   totalReturned:number
  * }}
  */
+/**
+ * Returns true only for a genuine Manual Review record.
+ *
+ * Formatting can place checkbox FALSE values in otherwise blank rows. Those
+ * rows must not appear in the review queue.
+ *
+ * @param {Object} row
+ * @return {boolean}
+ */
+function isManualFmrReviewQueueRecord_(row) {
+  const value =
+    row || {};
+
+  return Boolean(
+    normalizeManualFmrText_(
+      value.Review_ID
+    ) &&
+    normalizeManualFmrText_(
+      value.Entry_Row_ID
+    ) &&
+    normalizeManualFmrText_(
+      value.Batch_ID
+    )
+  );
+}
+
+
+
 function getManualFmrReviewQueue(
   spreadsheetId,
   callerEmail,
@@ -215,12 +243,18 @@ function getManualFmrReviewQueue(
   const reviewSheet = spreadsheet.getSheetByName(
     FMR_MANUAL_CONFIG.sheets.review
   );
-
+//////////
   let rows = readManualFmrSheetObjects_(
     reviewSheet,
     FMR_MANUAL_CONFIG.reviewHeaders
   );
-
+  /**
+   * Checkbox formatting can leave false values in blank rows
+   * remove those rows before authorizing, sorting, or decision filtering
+   */
+  rows = rows.filter(
+    isManualFmrReviewQueueRecord_
+  );
   if (!isManualFmrElevatedReviewer_(reviewer)) {
     rows = rows.filter(function (row) {
       return (
@@ -260,12 +294,12 @@ function getManualFmrReviewQueue(
   }
 
   if (!includeProcessed) {
-    rows = rows.filter(function (row) {
-      return !normalizeManualFmrText_(
-        row.Review_Decision
-      );
-    });
-  }
+  rows = rows.filter(function (row) {
+    return !isManualFmrReviewFinalized_(
+      row
+    );
+  });
+}
 
   const maximumRows =
     normalizeManualFmrReviewLimit_(
@@ -719,12 +753,19 @@ function processManualFmrReviewItem_(
     entryItem.record
   );
 
+  const reviewBatch =
+    context.batchById[
+      normalizeManualFmrText_(
+        review.Batch_ID
+      )
+    ] || {};
+
   assertManualFmrSeparationOfDuties_(
     entry,
     review,
-    reviewer
+    reviewer,
+    reviewBatch
   );
-
   if (
     decision ===
     FMR_MANUAL_CONFIG
@@ -2123,24 +2164,63 @@ function assertManualFmrReviewAssignment_(
 function assertManualFmrSeparationOfDuties_(
   entry,
   review,
-  reviewer
+  reviewer,
+  batch
 ) {
-  const entryEmail =
+  const reviewerEmail =
     normalizeManualFmrEmail_(
-      entry.Entered_By
-    );
-  const submittedBy =
-    normalizeManualFmrEmail_(
-      review.Submitted_By
+      reviewer && reviewer.Email
     );
 
+  const entryEmail =
+    normalizeManualFmrEmail_(
+      entry && entry.Entered_By
+    );
+
+  const submittedBy =
+    normalizeManualFmrEmail_(
+      review && review.Submitted_By
+    );
+
+  const batchCreator =
+    normalizeManualFmrEmail_(
+      batch && batch.Created_By
+    );
+
+  const conflicts = [];
+
   if (
-    reviewer.Email === entryEmail ||
-    reviewer.Email === submittedBy
+    reviewerEmail &&
+    reviewerEmail === entryEmail
   ) {
+    conflicts.push(
+      'staging entry creator'
+    );
+  }
+
+  if (
+    reviewerEmail &&
+    reviewerEmail === submittedBy
+  ) {
+    conflicts.push(
+      'review submitter'
+    );
+  }
+
+  if (
+    reviewerEmail &&
+    reviewerEmail === batchCreator
+  ) {
+    conflicts.push(
+      'batch creator'
+    );
+  }
+
+  if (conflicts.length > 0) {
     throw new Error(
-      `Reviewer "${reviewer.Email}" cannot approve, return, or reject ` +
-      `their own staging row "${entry.Entry_Row_ID}".`
+      `Reviewer "${reviewerEmail}" cannot approve, return, or reject ` +
+      `review "${review.Review_ID}" because the reviewer is also the ` +
+      `${conflicts.join(', ')}.`
     );
   }
 

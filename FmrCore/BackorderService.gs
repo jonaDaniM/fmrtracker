@@ -1,16 +1,22 @@
 /**
- * BackorderService_v2_3_1_STATE_SAFE.gs
+ * BackorderService.gs
  *
- * FMRCORE ONLY.
+ * FMRCore v2.3.1 Planning backorder decision service.
  *
- * Corrects Planning backorder decisions by:
- * - allowing only genuinely actionable statuses;
- * - reconciling confirmation/rejection transaction history;
- * - persisting and verifying the Backorder_Requests update before appending
- *   a new transaction;
- * - clearing caches between writes and reads;
- * - preventing duplicate confirmation/rejection transactions;
- * - returning the persisted request state to the client.
+ * Responsibilities:
+ * - Authorize Planning backorder reviewers through Security.gs.
+ * - Allow decisions only for genuinely actionable request statuses.
+ * - Reconcile prior confirmation and rejection transactions.
+ * - Persist and verify Backorder_Requests before appending transactions.
+ * - Prevent duplicate confirmation and rejection transactions.
+ * - Refresh canonical FMR line and header quantity summaries.
+ * - Return the verified persisted decision state.
+ *
+ * Depends on:
+ * - Security.gs
+ * - Repository.gs
+ * - QuantityService.gs
+ * - SerializationService.gs
  */
 
 function reviewBackorder_(userEmail, request) {
@@ -25,11 +31,7 @@ function reviewBackorder_(userEmail, request) {
     const user =
       getAuthorizedUser_(
         userEmail,
-        [
-          FMR_CORE.ROLES.ADMIN,
-          FMR_CORE.ROLES.PLANNER,
-          FMR_CORE.ROLES.MATERIAL_CONTROL
-        ],
+        backorderReviewRoles_(),
         'ADMIN'
       );
 
