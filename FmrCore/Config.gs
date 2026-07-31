@@ -1,5 +1,5 @@
 /**
- * FMRCore v2.3.1-rc1
+ * FMRCore v2.3.1
  *
  * Release-candidate configuration for the repaired FMRCore service layer.
  *
@@ -12,7 +12,7 @@
  * - Centralized Field and backorder capability rules.
  */
 const FMR_CORE = Object.freeze({
-  VERSION: '2.3.1-rc1',
+  VERSION: '2.3.1',
   
   SHEETS: Object.freeze({
     CONFIG: 'Configuration',

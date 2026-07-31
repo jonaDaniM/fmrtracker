@@ -307,7 +307,7 @@ function inspectFoundationReadOnly_(
 
     coreVersionCorrect:
       FMR_CORE.VERSION ===
-      '2.3.1-rc1'
+      '2.3.1'
   };
 
   const failedChecks =
