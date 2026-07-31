@@ -1,189 +1,265 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <base target="_top">
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>FMR Tracker</title>
-    <?!= include('Styles'); ?>
-    <?!= include('ImportStyles'); ?>
-  </head>
-  <body>
-    <header class="app-header">
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <?!= include_('Styles'); ?>
+  <? if (isImportView) { ?>
+    <?!= include_('ImportStyles'); ?>
+  <? } ?>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
       <div>
-        <h1 id="pageTitle">FMR Tracker</h1>
-        <p id="pageSubtitle" class="muted">Loading…</p>
+        <h1 id="pageTitle">FMR Portal</h1>
+        <p id="pageSubtitle">Loading protected FMR services…</p>
       </div>
-      <nav class="app-nav" aria-label="Portal views">
-        <a id="fieldNav" href="?view=field">Field</a>
-        <a id="adminNav" href="?view=admin">Admin</a>
-        <a id="importNav" href="?view=import">Import</a>
+      <nav class="view-nav" aria-label="Portal views">
+        <a href="<?= webAppUrl ?>?view=field" target="_top" id="fieldNav">Field</a>
+        <a href="<?= webAppUrl ?>?view=admin" target="_top" id="adminNav">Admin</a>
+        <a href="<?= webAppUrl ?>?view=import" target="_top" id="importNav">Import</a>
       </nav>
     </header>
 
-    <div id="globalError" class="alert alert-error hidden" role="alert"></div>
-    <div id="globalSuccess" class="alert alert-success hidden" role="status"></div>
+    <div id="globalError" class="alert error hidden"></div>
+    <div id="globalSuccess" class="alert success hidden"></div>
 
-    <main>
-      <section id="fieldView" class="view hidden">
-        <div class="toolbar">
-          <label>ISO Line
-            <input id="fieldLineNumber" type="text" autocomplete="off">
-          </label>
-          <label>ISO Sheet
-            <input id="fieldSheetNumber" type="text" autocomplete="off">
-          </label>
-          <button id="fieldSearchButton" type="button">Search</button>
-        </div>
-        <p id="fieldPermissionNote" class="muted"></p>
-        <div class="status-row">
-          <span id="fieldStatus"></span>
-          <span id="fieldLastRefreshed" class="muted"></span>
-        </div>
-        <div id="fieldResults"></div>
+    <section id="fieldView" class="hidden">
+      <section class="panel search-panel field-search">
+        <label>ISO Line Number
+          <input id="fieldLineNumber" autocomplete="off" placeholder="FG-70912_001">
+        </label>
+        <label>ISO Sheet
+          <input id="fieldSheetNumber" autocomplete="off" placeholder="3">
+        </label>
+        <button id="fieldSearchButton" type="button">Search</button>
+        <span id="fieldStatus" class="status-text"></span>
       </section>
+      <div class="field-refresh-row">
+        <span id="fieldPermissionNote" class="muted"></span>
+        <span id="fieldLastRefreshed" class="muted"></span>
+      </div>
+      <section id="fieldResults"></section>
+    </section>
 
-      <section id="adminView" class="view hidden">
-        <div class="toolbar admin-filters">
+    <section id="adminView" class="hidden">
+      <section id="kpiGrid" class="kpi-grid"></section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>Project FMR Search</h2>
+            <p>Filters may be combined. Line and sheet remain separate fields.</p>
+          </div>
+          <div class="refresh-area">
+            <button id="adminRefreshButton" type="button" class="secondary">Refresh</button>
+            <span id="lastRefreshed" class="muted"></span>
+          </div>
+        </div>
+
+        <div class="admin-filters">
           <label>FMR Number
-            <input id="filterFmrNumber" type="text" autocomplete="off">
+            <input id="filterFmrNumber" autocomplete="off" placeholder="FMR-2026-00001">
           </label>
           <label>IWP
-            <input id="filterIwp" type="text" list="iwpOptions" autocomplete="off">
+            <input id="filterIwp" list="iwpOptions" autocomplete="off" placeholder="IWP number">
+            <datalist id="iwpOptions"></datalist>
           </label>
-          <datalist id="iwpOptions"></datalist>
-          <label>ISO Line
-            <input id="filterIsoLine" type="text" autocomplete="off">
+          <label>ISO Line Number
+            <input id="filterIsoLine" autocomplete="off" placeholder="FG-70912_001">
           </label>
           <label>ISO Sheet
-            <input id="filterIsoSheet" type="text" autocomplete="off">
+            <input id="filterIsoSheet" autocomplete="off" placeholder="3">
           </label>
           <label>Status
-            <select id="filterStatus">
+            <select id="filterStatus"><option value="">All statuses</option></select>
+          </label>
+          <label>Commodity Code
+            <input id="filterCommodity" autocomplete="off" placeholder="Commodity code">
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="adminSearchButton" type="button">Apply Filters</button>
+          <button id="adminClearButton" type="button" class="secondary">Clear</button>
+          <span id="adminResultStatus" class="status-text"></span>
+        </div>
+      </section>
+
+      <section class="admin-grid">
+        <div>
+          <div class="section-heading compact"><h2>FMR Results</h2></div>
+          <section id="adminFmrResults"></section>
+        </div>
+
+        <aside>
+          <section class="panel queue-panel">
+            <div class="section-heading compact">
+              <h2>Planning Backorder Queue</h2>
+              <span id="backorderCount" class="count-pill">0</span>
+            </div>
+            <div id="backorderQueue"></div>
+          </section>
+
+          <section class="panel queue-panel">
+            <div class="section-heading compact">
+              <h2>Active Bag & Tags</h2>
+              <span id="bagTagCount" class="count-pill">0</span>
+            </div>
+            <div id="bagTagQueue"></div>
+          </section>
+        </aside>
+      </section>
+    </section>
+
+    <section id="importView" class="hidden" aria-labelledby="importHeading">
+      <section class="panel import-control-panel">
+        <div class="section-heading import-heading">
+          <div>
+            <h2 id="importHeading">Completed FMR Import</h2>
+            <p>
+              Discover completed FMR files, process structured workbooks before
+              PDFs, and send extracted rows to human verification.
+            </p>
+          </div>
+          <div class="import-user-block">
+            <span class="muted">Signed in as</span>
+            <strong id="importUserEmail">Loading…</strong>
+          </div>
+        </div>
+
+        <div class="import-control-grid">
+          <label>Assigned Batch
+            <select id="importBatchSelect">
+              <option value="">Loading assigned batches…</option>
+            </select>
+          </label>
+
+          <label>Status Filter
+            <select id="importStatusFilter">
               <option value="">All statuses</option>
             </select>
           </label>
-          <label>Commodity
-            <input id="filterCommodity" type="text" autocomplete="off">
+
+          <label>Discovery Name Filter
+            <input
+              id="importNameFilter"
+              autocomplete="off"
+              placeholder="Optional filename text">
           </label>
-          <div class="toolbar-actions">
-            <button id="adminSearchButton" type="button">Search</button>
-            <button id="adminRefreshButton" type="button" class="secondary">Refresh</button>
-            <button id="adminClearButton" type="button" class="secondary">Clear</button>
-          </div>
+
+          <label>Chunk Size
+            <input
+              id="importChunkSize"
+              type="number"
+              min="1"
+              max="10"
+              value="5">
+          </label>
         </div>
 
-        <div id="kpiGrid" class="kpi-grid"></div>
-        <div class="status-row">
-          <span id="adminResultStatus"></span>
-          <span id="lastRefreshed" class="muted"></span>
+        <div class="button-row import-primary-actions">
+          <button id="importDiscoverButton" type="button">Discover Files</button>
+          <button id="importProcessChunkButton" type="button">Process Next Chunk</button>
+          <button id="importRefreshButton" type="button" class="secondary">Refresh</button>
+          <span id="importOperationStatus" class="status-text"></span>
         </div>
-        <div id="adminFmrResults"></div>
 
-        <section class="queue-section">
-          <h2>Pending Backorders <span id="backorderCount" class="count-pill">0</span></h2>
-          <div id="backorderQueue"></div>
-        </section>
-
-        <section class="queue-section">
-          <h2>Active Bag Tags <span id="bagTagCount" class="count-pill">0</span></h2>
-          <div id="bagTagQueue"></div>
-        </section>
+        <div class="button-row import-secondary-actions">
+          <button id="importProcessSelectedButton" type="button" class="secondary">
+            Process Selected
+          </button>
+          <button id="importRetrySelectedButton" type="button" class="secondary">
+            Retry Selected
+          </button>
+          <button id="importCancelSelectedButton" type="button" class="danger-button">
+            Cancel Selected
+          </button>
+          <button id="importOpenFolderButton" type="button" class="secondary">
+            Open Source Folder
+          </button>
+          <button id="importOpenStagingButton" type="button" class="secondary">
+            Open Staging Sheet
+          </button>
+          <button id="importOpenQueueButton" type="button" class="secondary">
+            Open Queue Sheet
+          </button>
+        </div>
       </section>
 
-      <section id="importView" class="view hidden">
-        <div class="import-toolbar">
-          <div class="import-meta">
-            <div><span class="muted">Signed in as</span> <strong id="importUserEmail">—</strong></div>
-          </div>
+      <section id="importBatchSummary" class="import-summary-grid"></section>
 
-          <div class="toolbar">
-            <label>Batch
-              <select id="importBatchSelect"></select>
-            </label>
-            <label>Status
-              <select id="importStatusFilter"></select>
-            </label>
-            <label>Name filter
-              <input id="importNameFilter" type="text" autocomplete="off">
-            </label>
-            <label>Chunk size
-              <input id="importChunkSize" type="number" min="1" max="25" value="5">
-            </label>
-          </div>
-
-          <div class="toolbar-actions import-actions">
-            <button id="importDiscoverButton" type="button">Discover Files</button>
-            <button id="importProcessChunkButton" type="button">Process Chunk</button>
-            <button id="importProcessSelectedButton" type="button">Process Selected</button>
-            <button id="importRetrySelectedButton" type="button" class="secondary">Retry Selected</button>
-            <button id="importCancelSelectedButton" type="button" class="danger">Cancel Selected</button>
-            <button id="importRefreshButton" type="button" class="secondary">Refresh</button>
-            <button id="importOpenFolderButton" type="button" class="secondary">Open Source Folder</button>
-            <button id="importOpenStagingButton" type="button" class="secondary">Open Staging</button>
-            <button id="importOpenQueueButton" type="button" class="secondary">Open Queue</button>
-          </div>
-        </div>
-
-        <p id="importOperationStatus" class="muted"></p>
-        <div id="importBatchSummary" class="import-summary-grid"></div>
-
-        <div class="import-queue-header">
+      <section class="panel import-queue-panel">
+        <div class="section-heading compact import-queue-heading">
           <div>
             <h2>Import Queue</h2>
-            <p id="importQueueCaption" class="muted"></p>
+            <p id="importQueueCaption" class="muted">Select a batch to load its queue.</p>
           </div>
-          <div class="toolbar-actions">
-            <span id="importSelectedCount" class="muted">0 selected</span>
-            <button id="importClearSelectionButton" type="button" class="secondary">Clear Selection</button>
+          <div class="import-selection-summary">
+            <span id="importSelectedCount" class="count-pill">0 selected</span>
+            <button id="importClearSelectionButton" type="button" class="secondary compact-button">
+              Clear
+            </button>
           </div>
         </div>
 
-        <div id="importQueueEmpty" class="empty-state">No import queue records were found for this batch.</div>
-        <div id="importQueueTableWrap" class="table-wrap hidden">
-          <table class="import-queue-table">
+        <div id="importQueueEmpty" class="import-empty-state">
+          Select an assigned batch to begin.
+        </div>
+
+        <div id="importQueueTableWrap" class="import-table-wrap hidden">
+          <table class="import-table">
             <thead>
               <tr>
-                <th class="import-check-column">
+                <th scope="col" class="import-check-column">
                   <input id="importSelectAll" type="checkbox" aria-label="Select all visible imports">
                 </th>
-                <th>Status</th>
-                <th>Source</th>
-                <th>Method</th>
-                <th>FMR</th>
-                <th>IWP / ISO</th>
-                <th>Confidence</th>
-                <th>Warnings</th>
+                <th scope="col">Status</th>
+                <th scope="col">Source</th>
+                <th scope="col">Method</th>
+                <th scope="col">FMR / Revision</th>
+                <th scope="col">Lines</th>
+                <th scope="col">Confidence</th>
+                <th scope="col">Warnings / Message</th>
+                <th scope="col">Updated</th>
               </tr>
             </thead>
             <tbody id="importQueueBody"></tbody>
           </table>
         </div>
       </section>
-    </main>
+    </section>
+  </main>
 
-    <div id="actionModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="actionTitle">
-      <div class="modal-card">
-        <div class="modal-header">
+  <div id="actionModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="actionTitle">
+    <div class="modal-card">
+      <div class="section-heading">
+        <div>
           <h2 id="actionTitle">Field Action</h2>
-          <button id="actionCloseButton" type="button" class="secondary small" aria-label="Close">Close</button>
+          <p id="actionContext"></p>
         </div>
-        <p id="actionContext" class="muted"></p>
-        <form id="actionForm">
-          <div id="actionFields"></div>
-          <p id="actionStatus" class="muted"></p>
-          <div class="modal-actions">
-            <button id="actionCancelButton" type="button" class="secondary">Cancel</button>
-            <button id="actionSubmitButton" type="submit">Submit</button>
-          </div>
-        </form>
+        <button id="actionCloseButton" type="button" class="icon-button" aria-label="Close">×</button>
       </div>
+      <form id="actionForm">
+        <div id="actionFields" class="action-fields"></div>
+        <div class="button-row modal-actions">
+          <button id="actionSubmitButton" type="submit">Submit</button>
+          <button id="actionCancelButton" type="button" class="secondary">Cancel</button>
+          <span id="actionStatus" class="status-text"></span>
+        </div>
+      </form>
     </div>
+  </div>
 
-    <script>
-      const REQUESTED_VIEW = '<?= REQUESTED_VIEW ?>';
-    </script>
-    <?!= include('Client'); ?>
-    <?!= include('ImportClient'); ?>
-  </body>
+  <script>
+    const REQUESTED_VIEW = <?!= JSON.stringify(requestedView) ?>;
+  </script>
+
+  <? if (isImportView) { ?>
+    <?!= include_('ImportClient'); ?>
+  <? } else { ?>
+    <?!= include_('Client'); ?>
+  <? } ?>
+</body>
 </html>

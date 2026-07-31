@@ -1,129 +1,281 @@
 <style>
-  .import-toolbar {
-    display: grid;
-    gap: 1rem;
-    margin-bottom: 1rem;
-  }
-
-  .import-summary-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 0.75rem;
-    margin: 1rem 0 1.25rem;
-  }
-
-  .import-summary-card {
-    background: #fffdf8;
-    border: 1px solid #d7ddd7;
-    border-radius: 14px;
-    padding: 0.9rem 1rem;
-    box-shadow: 0 10px 30px rgba(31, 42, 36, 0.06);
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
-
-  .import-summary-card .label {
-    color: #5f6b64;
-    font-size: 0.8rem;
-  }
-
-  .import-summary-card .value {
-    font-size: 1.3rem;
-    font-weight: 650;
-  }
-
-  .import-queue-header {
-    display: flex;
-    justify-content: space-between;
-    gap: 1rem;
-    align-items: end;
-    margin: 1.5rem 0 0.75rem;
-    flex-wrap: wrap;
-  }
-
-  .import-queue-header h2 {
-    margin: 0;
-  }
-
-  .import-queue-table .import-check-column {
-    width: 42px;
-  }
-
-  .import-status-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.25rem 0.55rem;
-    border-radius: 999px;
-    font-size: 0.78rem;
-    background: #edf0ec;
-    white-space: nowrap;
-  }
-
-  .import-status-queued,
-  .import-status-discovered {
-    background: #e8eef8;
-    color: #35517a;
-  }
-
-  .import-status-processing {
-    background: #f7ecd7;
-    color: #9a6b16;
-  }
-
-  .import-status-staged-needs-verification {
-    background: #dff0e6;
-    color: #1f6b4a;
-  }
-
-  .import-status-needs-manual-entry,
-  .import-status-failed {
-    background: #f6e2e2;
-    color: #8f2d2d;
-  }
-
-  .import-status-cancelled,
-  .import-status-skipped-duplicate {
-    background: #ececec;
-    color: #5f6b64;
-  }
-
-  .import-source-name {
-    display: block;
-    font-weight: 600;
-  }
-
-  .import-source-link {
-    display: inline-block;
-    margin-top: 0.25rem;
-    color: #1f6b4a;
-  }
-
-  .import-subvalue {
-    display: block;
-    color: #5f6b64;
-    font-size: 0.85rem;
-    margin-top: 0.2rem;
-  }
-
-  .import-fmr-number {
-    font-weight: 650;
-  }
-
-  .import-confidence.high { color: #1f6b4a; }
-  .import-confidence.medium { color: #9a6b16; }
-  .import-confidence.low { color: #8f2d2d; }
-
-  .import-warning-list {
-    margin: 0;
-    padding-left: 1rem;
-    color: #5f6b64;
-    font-size: 0.85rem;
-  }
-
-  .import-message {
-    margin-top: 0.35rem;
-    color: #8f2d2d;
-    font-size: 0.85rem;
-  }
-</style>
+    .danger-button {
+      background: #8f1d1d;
+      border-color: #8f1d1d;
+      color: #fff;
+    }
+  
+    .danger-button:hover {
+      background: #741717;
+      border-color: #741717;
+    }
+  
+    .import-control-panel {
+      margin-bottom: 1rem;
+    }
+  
+    .import-heading {
+      align-items: flex-start;
+    }
+  
+    .import-heading p,
+    .import-queue-heading p {
+      margin: 0.35rem 0 0;
+    }
+  
+    .import-user-block {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 0.2rem;
+      text-align: right;
+    }
+  
+    .import-control-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 2fr) minmax(180px, 1fr) minmax(220px, 1.4fr) minmax(120px, 0.6fr);
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+  
+    .import-primary-actions,
+    .import-secondary-actions {
+      margin-top: 1rem;
+      flex-wrap: wrap;
+    }
+  
+    .import-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(130px, 1fr));
+      gap: 0.8rem;
+      margin-bottom: 1rem;
+    }
+  
+    .import-summary-card {
+      background: #fff;
+      border: 1px solid #d8dee8;
+      border-radius: 10px;
+      padding: 0.9rem;
+      box-shadow: 0 1px 3px rgba(26, 38, 55, 0.08);
+    }
+  
+    .import-summary-card .label {
+      display: block;
+      color: #5f6b7a;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.025em;
+      text-transform: uppercase;
+    }
+  
+    .import-summary-card .value {
+      display: block;
+      margin-top: 0.35rem;
+      font-size: 1.55rem;
+      font-weight: 700;
+    }
+  
+    .import-queue-panel {
+      overflow: hidden;
+    }
+  
+    .import-queue-heading {
+      align-items: center;
+    }
+  
+    .import-selection-summary {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+    }
+  
+    .compact-button {
+      min-height: auto;
+      padding: 0.35rem 0.65rem;
+    }
+  
+    .import-empty-state {
+      padding: 2rem 1rem;
+      color: #667085;
+      text-align: center;
+    }
+  
+    .import-table-wrap {
+      width: 100%;
+      overflow-x: auto;
+    }
+  
+    .import-table {
+      width: 100%;
+      min-width: 1180px;
+      border-collapse: collapse;
+    }
+  
+    .import-table th,
+    .import-table td {
+      border-top: 1px solid #e5e9f0;
+      padding: 0.7rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+  
+    .import-table th {
+      background: #f7f9fc;
+      color: #465467;
+      font-size: 0.76rem;
+      letter-spacing: 0.025em;
+      position: sticky;
+      top: 0;
+      text-transform: uppercase;
+      z-index: 1;
+    }
+  
+    .import-table tbody tr:hover {
+      background: #f8fbff;
+    }
+  
+    .import-check-column {
+      width: 40px;
+      text-align: center !important;
+    }
+  
+    .import-source-name {
+      display: block;
+      font-weight: 700;
+      max-width: 280px;
+      overflow-wrap: anywhere;
+    }
+  
+    .import-source-link {
+      display: inline-block;
+      margin-top: 0.25rem;
+      font-size: 0.82rem;
+    }
+  
+    .import-fmr-number {
+      display: block;
+      font-weight: 700;
+    }
+  
+    .import-subvalue {
+      display: block;
+      margin-top: 0.2rem;
+      color: #667085;
+      font-size: 0.82rem;
+    }
+  
+    .import-warning-list {
+      margin: 0;
+      padding-left: 1rem;
+      font-size: 0.82rem;
+    }
+  
+    .import-message {
+      margin-top: 0.35rem;
+      color: #7a4b00;
+      font-size: 0.82rem;
+    }
+  
+    .import-status-badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 0.28rem 0.55rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      line-height: 1.15;
+      white-space: nowrap;
+    }
+  
+    .import-status-queued,
+    .import-status-discovered {
+      background: #e7f0ff;
+      color: #154c91;
+    }
+  
+    .import-status-processing {
+      background: #fff2cc;
+      color: #7a5100;
+    }
+  
+    .import-status-staged-needs-verification {
+      background: #e2f7e9;
+      color: #146c38;
+    }
+  
+    .import-status-skipped-duplicate {
+      background: #eceff3;
+      color: #4c5868;
+    }
+  
+    .import-status-needs-manual-entry {
+      background: #fff0dc;
+      color: #8a4d00;
+    }
+  
+    .import-status-failed {
+      background: #fde7e7;
+      color: #a12626;
+    }
+  
+    .import-status-cancelled {
+      background: #f1e8f8;
+      color: #6a2d87;
+    }
+  
+    .import-confidence {
+      font-weight: 700;
+    }
+  
+    .import-confidence.low {
+      color: #a12626;
+    }
+  
+    .import-confidence.medium {
+      color: #8a5c00;
+    }
+  
+    .import-confidence.high {
+      color: #146c38;
+    }
+  
+    .import-batch-description {
+      margin-top: 0.6rem;
+      color: #667085;
+      font-size: 0.85rem;
+    }
+  
+    @media (max-width: 1100px) {
+      .import-control-grid {
+        grid-template-columns: repeat(2, minmax(220px, 1fr));
+      }
+  
+      .import-summary-grid {
+        grid-template-columns: repeat(3, minmax(130px, 1fr));
+      }
+    }
+  
+    @media (max-width: 680px) {
+      .import-heading {
+        align-items: stretch;
+      }
+  
+      .import-user-block {
+        align-items: flex-start;
+        text-align: left;
+      }
+  
+      .import-control-grid {
+        grid-template-columns: 1fr;
+      }
+  
+      .import-summary-grid {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+      }
+  
+      .import-primary-actions button,
+      .import-secondary-actions button {
+        width: 100%;
+      }
+    }
+  </style>
